@@ -1,7 +1,7 @@
 {
   "id": "maimai_vrchat_osc",
   "name": "maimai DX · VRChat OSC",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "sdk": "1",
   "author": "XiaoLan9999",
   "description": "持续发送 maimai DX 主界面、选歌、游玩与结算状态到 VRChat OSC，不包含郊狼设备触发。",

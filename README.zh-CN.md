@@ -17,7 +17,7 @@ Sinmai / MelonLoader
 
 ## 安装
 
-1. 将 `maimai_vrchat_osc-1.4.0.zip` 导入 DGHUB 并启用。
+1. 将 `maimai_vrchat_osc-1.4.1.zip` 导入 DGHUB 并启用。
 2. 让插件自动识别运行中的游戏，或在配置中填写 `Package` 目录。内置桥接会
    经过 SHA-256 校验后安装，并在升级前备份；游戏运行时不会覆盖正在使用的 DLL。
 3. 启用“VRChat OSC”，填写运行 VRChat 的电脑局域网 IPv4，端口保持 `9000`。
@@ -67,7 +67,7 @@ VRChat 电脑需要允许专用网络配置文件的入站 UDP 9000。OSC 没有
 .\build.ps1 -GamePackage "D:\Games\maimai\Package"
 ```
 
-脚本会生成 `dist/maimai_vrchat_osc-1.4.0.zip` 和编译后的游戏桥接目录，
+脚本会生成 `dist/maimai_vrchat_osc-1.4.1.zip` 和编译后的游戏桥接目录，
 不会把第三方或游戏程序集打进插件包。
 
 ## 测试

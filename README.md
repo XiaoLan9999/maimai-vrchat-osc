@@ -18,7 +18,7 @@ Sinmai / MelonLoader
 
 ## Installation
 
-1. Import `maimai_vrchat_osc-1.4.0.zip` into DGHub and enable it.
+1. Import `maimai_vrchat_osc-1.4.1.zip` into DGHub and enable it.
 2. Let the plugin detect the running game, or set the `Package` directory in
    its configuration. The bundled bridge is installed with SHA-256 checking
    and backups; it is not replaced while the game is running.
@@ -73,7 +73,7 @@ The bridge is compiled against and member-checked with:
 .\build.ps1 -GamePackage "D:\Games\maimai\Package"
 ```
 
-The script creates `dist/maimai_vrchat_osc-1.4.0.zip` and a compiled game
+The script creates `dist/maimai_vrchat_osc-1.4.1.zip` and a compiled game
 mod directory. It does not include third-party or game assemblies.
 
 ## Tests

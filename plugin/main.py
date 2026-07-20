@@ -67,6 +67,7 @@ async def main():
         "kind": "MENU",
     }
     result_hold_until = [0.0]
+    result_screen_active = [False]
     last_osc_send_at = [0.0]
     osc_sent_once = [False]
     install_wakeup = asyncio.Event()
@@ -221,7 +222,16 @@ async def main():
                 await send_status(ws)
             elif event.get("event") == "presence":
                 status = str(event.get("status") or "MENU").upper()
-                if not (status == "MENU" and time.monotonic() < result_hold_until[0]):
+                if status == "RESULT_SCREEN":
+                    result_screen_active[0] = True
+                    continue
+                was_result_screen = result_screen_active[0]
+                result_screen_active[0] = False
+                if not (
+                    status == "MENU"
+                    and not was_result_screen
+                    and time.monotonic() < result_hold_until[0]
+                ):
                     await set_card(
                         ws,
                         format_presence(event),
@@ -229,12 +239,14 @@ async def main():
                         force=osc_card["kind"] != status,
                     )
             elif event.get("event") == "counts" and event.get("status") == "PLAYING" and as_int(event.get("player"), 1) == as_int(cfg["osc_player"], 1):
+                result_screen_active[0] = False
                 await set_card(
                     ws,
                     format_playing(event, bool(cfg["osc_show_artist"]), bool(cfg["osc_show_judgements"])),
                     "PLAYING",
                 )
             elif event.get("event") == "settle" and bool(cfg["osc_show_result"]) and as_int(event.get("player"), 1) == as_int(cfg["osc_player"], 1):
+                result_screen_active[0] = False
                 result_hold_until[0] = time.monotonic() + OSC_RESULT_HOLD_SECONDS
                 await set_card(
                     ws,
