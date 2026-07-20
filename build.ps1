@@ -20,16 +20,10 @@ $bridgeDll = Join-Path $gameMod "MaiDGBridge.dll"
 if (-not $dist.StartsWith(([IO.Path]::GetFullPath($root) + [IO.Path]::DirectorySeparatorChar), [StringComparison]::OrdinalIgnoreCase)) {
     throw "Refusing to use a dist path outside the project: $dist"
 }
-
 foreach ($path in @($csc, $assemblyCSharp, $melonLoader, $harmony)) {
-    if (-not (Test-Path -LiteralPath $path)) {
-        throw "Required file not found: $path"
-    }
+    if (-not (Test-Path -LiteralPath $path)) { throw "Required file not found: $path" }
 }
-
-if (Test-Path -LiteralPath $dist) {
-    Remove-Item -LiteralPath $dist -Recurse -Force
-}
+if (Test-Path -LiteralPath $dist) { Remove-Item -LiteralPath $dist -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $gameMod, $pluginStage | Out-Null
 
 & $csc /nologo /target:library /optimize+ /warn:4 `
@@ -38,12 +32,10 @@ New-Item -ItemType Directory -Force -Path $gameMod, $pluginStage | Out-Null
     /reference:$harmony `
     /reference:$assemblyCSharp `
     (Join-Path $root "bridge\MaiDGBridge.cs")
-if ($LASTEXITCODE -ne 0) {
-    throw "C# compilation failed"
-}
+if ($LASTEXITCODE -ne 0) { throw "C# compilation failed" }
 
-Copy-Item -LiteralPath (Join-Path $root "bridge\MaiDGBridge.ini") -Destination $gameMod
 Copy-Item -LiteralPath (Join-Path $root "plugin\main.py") -Destination $pluginStage
+Copy-Item -LiteralPath (Join-Path $root "plugin\sse.py") -Destination $pluginStage
 Copy-Item -LiteralPath (Join-Path $root "plugin\installer.py") -Destination $pluginStage
 Copy-Item -LiteralPath (Join-Path $root "plugin\vrchat_osc.py") -Destination $pluginStage
 Copy-Item -LiteralPath (Join-Path $root "plugin\SOURCE.md") -Destination $pluginStage
@@ -54,21 +46,15 @@ $payloadStage = Join-Path $pluginStage "payload"
 New-Item -ItemType Directory -Force -Path $payloadStage | Out-Null
 Copy-Item -LiteralPath $bridgeDll -Destination $payloadStage
 Copy-Item -LiteralPath (Join-Path $root "bridge\MaiDGBridge.ini") -Destination $payloadStage
-
 $bridgeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $bridgeDll).Hash.ToLowerInvariant()
-$descriptor = [ordered]@{
-    plugin_version = $version
-    bridge_version = $version
-    sha256 = $bridgeHash
-}
-$descriptorJson = $descriptor | ConvertTo-Json
+$descriptor = [ordered]@{ plugin_version = $version; bridge_version = $version; sha256 = $bridgeHash }
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-[IO.File]::WriteAllText((Join-Path $payloadStage "bridge.json"), $descriptorJson + "`n", $utf8NoBom)
+[IO.File]::WriteAllText((Join-Path $payloadStage "bridge.json"), (($descriptor | ConvertTo-Json) + "`n"), $utf8NoBom)
 
-$pluginZip = Join-Path $dist "maimai_link-$version.zip"
+$pluginZip = Join-Path $dist "maimai_vrchat_osc-$version.zip"
 Compress-Archive -Path (Join-Path $pluginStage "*") -DestinationPath $pluginZip
 Remove-Item -LiteralPath $pluginStage -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $root "README.md") -Destination $dist
-
+Copy-Item -LiteralPath (Join-Path $root "README.zh-CN.md") -Destination $dist
 Write-Output "Built: $pluginZip"
 Write-Output "Built: $gameMod"

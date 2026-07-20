@@ -157,19 +157,14 @@ async def main():
             )
         )
 
-    triggers = [message for message in received if message.get("op") == "trigger"]
-    assert len(triggers) == 2, triggers
-    assert triggers[0]["delta_pct"] == 40, triggers[0]
-    assert triggers[0]["label"] == "P1 MISS x1 T1", triggers[0]
-    assert triggers[1]["delta_pct"] == 50, triggers[1]
-    assert triggers[1]["label"] == "P1 GOOD x2 T1", triggers[1]
+    assert not any(message.get("op") == "trigger" for message in received), received
     assert any(
         message.get("op") == "pong" and message.get("t") == 12345
         for message in received
     ), received
     assert any(b",sTF" in packet and b"ACH 0.0000%" in packet for packet in osc_packets), osc_packets
     assert any(b",sTF" in packet and b"RESULT 95.1234%" in packet for packet in osc_packets), osc_packets
-    print("integration ok: handshake, SSE, triggers, VRChat OSC, pong, stop")
+    print("integration ok: handshake, SSE, no triggers, VRChat OSC, pong, stop")
 
 
 if __name__ == "__main__":
