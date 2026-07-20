@@ -1,0 +1,143 @@
+{
+  "id": "maimai_link",
+  "name": "maimai DX · VRChat OSC / DGHub 联动",
+  "version": "1.3.0",
+  "sdk": "1",
+  "author": "XiaoLan9999",
+  "description": "接收本机 MaiDGBridge 的 maimai DX 实时数据，触发 DGHub，并可通过局域网显示 VRChat OSC 正在游玩信息。",
+  "homepage": "https://github.com/XiaoLan9999/maimai-vrchat-osc",
+  "entry": "main.py",
+  "capabilities": { "startup_check": true },
+  "config_schema": [
+    {
+      "section": "自动安装",
+      "fields": [
+        {
+          "key": "game_package",
+          "type": "path",
+          "path_kind": "dir",
+          "label": "游戏 Package 目录",
+          "default": "",
+          "description": "包含 Sinmai.exe 的 Package 目录；留空时会从正在运行的游戏自动识别"
+        },
+        {
+          "key": "auto_detect_game",
+          "type": "bool",
+          "label": "从运行中的游戏自动识别目录",
+          "default": true
+        },
+        {
+          "key": "auto_install_bridge",
+          "type": "bool",
+          "label": "自动安装/更新 MaiDGBridge",
+          "default": true,
+          "description": "安装前会备份已有 DLL 和配置；游戏运行中不会覆盖旧版 DLL"
+        }
+      ]
+    },
+    {
+      "section": "连接",
+      "fields": [
+        {
+          "key": "endpoint",
+          "type": "text",
+          "label": "MaiDGBridge 数据端点",
+          "default": "http://127.0.0.1:8891/events",
+          "description": "游戏 Mods 目录中的 MaiDGBridge.dll 提供的本机 SSE 地址"
+        },
+        { "key": "debug", "type": "bool", "label": "调试日志", "default": false }
+      ]
+    },
+    {
+      "section": "玩家",
+      "fields": [
+        { "key": "p1_enabled", "type": "bool", "label": "接收 1P 判定", "default": true },
+        { "key": "p2_enabled", "type": "bool", "label": "接收 2P 判定", "default": false }
+      ]
+    },
+    {
+      "section": "VRChat OSC",
+      "fields": [
+        {
+          "key": "osc_enabled",
+          "type": "bool",
+          "label": "启用 VRChat Chatbox",
+          "default": false,
+          "description": "通过标准 OSC UDP 发送正在游玩与结算信息；VRChat 中也需要启用 OSC"
+        },
+        {
+          "key": "osc_host",
+          "type": "text",
+          "label": "VRChat 电脑 IPv4",
+          "default": "127.0.0.1",
+          "description": "同机使用 127.0.0.1；局域网另一台电脑填写其 IPv4，例如 10.0.0.168"
+        },
+        {
+          "key": "osc_port",
+          "type": "text",
+          "label": "VRChat OSC 端口",
+          "default": "9000",
+          "description": "VRChat 默认接收端口为 UDP 9000"
+        },
+        {
+          "key": "osc_player",
+          "type": "text",
+          "label": "显示玩家",
+          "default": "1",
+          "description": "填写 1 或 2；该选项独立于 DGHub 判定触发玩家开关"
+        },
+        {
+          "key": "osc_update_interval",
+          "type": "duration",
+          "label": "刷新间隔",
+          "default": 1.0,
+          "description": "限制为 0.5 至 30 秒；仅在内容变化或保活时发送"
+        },
+        { "key": "osc_show_artist", "type": "bool", "label": "显示 Artist", "default": true },
+        { "key": "osc_show_judgements", "type": "bool", "label": "显示连击与 MISS", "default": true },
+        { "key": "osc_show_result", "type": "bool", "label": "显示曲目结算", "default": true },
+        {
+          "key": "osc_notification",
+          "type": "bool",
+          "label": "播放 Chatbox 通知音",
+          "default": false
+        }
+      ]
+    },
+    {
+      "section": "实时判定",
+      "fields": [
+        { "key": "judge_duration", "type": "duration", "label": "持续时间", "default": 1.0 },
+        { "key": "judge_preset", "type": "preset", "label": "波形预设", "default": "CS2-受伤" },
+        { "key": "channel", "type": "channel", "label": "输出通道", "default": "both" },
+        {
+          "key": "stack_by_count",
+          "type": "bool",
+          "label": "同帧判定叠加强度",
+          "default": false,
+          "description": "同一数据帧出现多个相同判定时，将强度乘以数量并限制在 100%"
+        },
+        { "key": "miss_enabled", "type": "bool", "label": "MISS 触发", "default": true },
+        { "key": "miss_strength", "type": "percent", "label": "MISS 强度", "default": 40 },
+        { "key": "good_enabled", "type": "bool", "label": "GOOD 触发", "default": false },
+        { "key": "good_strength", "type": "percent", "label": "GOOD 强度", "default": 25 },
+        { "key": "great_enabled", "type": "bool", "label": "GREAT 触发", "default": false },
+        { "key": "great_strength", "type": "percent", "label": "GREAT 强度", "default": 15 },
+        { "key": "perfect_enabled", "type": "bool", "label": "PERFECT 触发", "default": false },
+        { "key": "perfect_strength", "type": "percent", "label": "PERFECT 强度", "default": 8 },
+        { "key": "critical_enabled", "type": "bool", "label": "CRITICAL 触发", "default": false },
+        { "key": "critical_strength", "type": "percent", "label": "CRITICAL 强度", "default": 5 }
+      ]
+    },
+    {
+      "section": "曲目结束",
+      "fields": [
+        { "key": "settle_enabled", "type": "bool", "label": "结算触发", "default": false },
+        { "key": "settle_no_miss_only", "type": "bool", "label": "仅无 MISS 时触发", "default": false },
+        { "key": "settle_strength", "type": "percent", "label": "结算强度", "default": 25 },
+        { "key": "settle_duration", "type": "duration", "label": "结算持续时间", "default": 2.0 },
+        { "key": "settle_preset", "type": "preset", "label": "结算波形预设", "default": "CS2-受伤" }
+      ]
+    }
+  ]
+}
