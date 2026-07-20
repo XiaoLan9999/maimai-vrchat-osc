@@ -18,7 +18,7 @@ Sinmai / MelonLoader
 
 ## Installation
 
-1. Import `maimai_vrchat_osc-1.3.0.zip` into DGHub and enable it.
+1. Import `maimai_vrchat_osc-1.4.0.zip` into DGHub and enable it.
 2. Let the plugin detect the running game, or set the `Package` directory in
    its configuration. The bundled bridge is installed with SHA-256 checking
    and backups; it is not replaced while the game is running.
@@ -33,11 +33,25 @@ same bridge service.
 ## OSC behavior
 
 The plugin sends `/chatbox/input` with `(String, True, False)` over UDP. It
-shows the song title, Artist, chart, level, constant, progress, achievement,
-DX score, combo, and MISS count when the game exposes those fields. Messages
+shows a persistent menu, song-select, now-playing, and result card. Messages
 are limited to 144 characters and 9 lines, deduplicated, and throttled to one
-update per second by default. A result card is sent at track end; idle does
-not clear the Chatbox.
+update per second by default. The current card is force-sent every 5 seconds
+to recover from temporary UDP loss. Menu and song-select cards look like:
+
+```text
+【舞萌DX】
+在主界面中
+版本号 1.55.00
+```
+
+```text
+【舞萌DX】
+42s 正在选歌：
+Song Name MASTER
+```
+
+A result card is held briefly at track end; the next menu/select state then
+takes over. Idle never sends an empty card.
 
 VRChat's receiving computer must allow inbound UDP 9000 on its Private network
 profile. OSC has no acknowledgement or retransmission, so use a stable LAN
@@ -59,7 +73,7 @@ The bridge is compiled against and member-checked with:
 .\build.ps1 -GamePackage "D:\Games\maimai\Package"
 ```
 
-The script creates `dist/maimai_vrchat_osc-1.3.0.zip` and a compiled game
+The script creates `dist/maimai_vrchat_osc-1.4.0.zip` and a compiled game
 mod directory. It does not include third-party or game assemblies.
 
 ## Tests

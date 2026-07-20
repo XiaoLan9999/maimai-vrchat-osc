@@ -1,10 +1,10 @@
 {
   "id": "maimai_vrchat_osc",
   "name": "maimai DX · VRChat OSC",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "sdk": "1",
   "author": "XiaoLan9999",
-  "description": "只发送 maimai DX 正在游玩信息到 VRChat OSC，不包含郊狼设备触发。",
+  "description": "持续发送 maimai DX 主界面、选歌、游玩与结算状态到 VRChat OSC，不包含郊狼设备触发。",
   "homepage": "https://github.com/XiaoLan9999/maimai-vrchat-osc",
   "entry": "main.py",
   "capabilities": { "startup_check": true },
@@ -27,7 +27,7 @@
     {
       "section": "VRChat OSC",
       "fields": [
-        { "key": "osc_enabled", "type": "bool", "label": "启用 VRChat Chatbox", "default": false, "description": "发送标准 OSC UDP；VRChat 中也需要启用 OSC" },
+        { "key": "osc_enabled", "type": "bool", "label": "启用 VRChat Chatbox", "default": false, "description": "持续发送主界面、选歌、正在游玩与结算状态；VRChat 中也需要启用 OSC" },
         { "key": "osc_host", "type": "text", "label": "VRChat 电脑 IPv4", "default": "127.0.0.1", "description": "同机使用 127.0.0.1；局域网另一台电脑填写其 IPv4" },
         { "key": "osc_port", "type": "text", "label": "VRChat OSC 端口", "default": "9000", "description": "VRChat 默认接收端口为 UDP 9000" },
         { "key": "osc_player", "type": "text", "label": "显示玩家", "default": "1", "description": "填写 1 或 2" },

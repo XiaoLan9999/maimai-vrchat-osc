@@ -17,7 +17,7 @@ Sinmai / MelonLoader
 
 ## 安装
 
-1. 将 `maimai_vrchat_osc-1.3.0.zip` 导入 DGHUB 并启用。
+1. 将 `maimai_vrchat_osc-1.4.0.zip` 导入 DGHUB 并启用。
 2. 让插件自动识别运行中的游戏，或在配置中填写 `Package` 目录。内置桥接会
    经过 SHA-256 校验后安装，并在升级前备份；游戏运行时不会覆盖正在使用的 DLL。
 3. 启用“VRChat OSC”，填写运行 VRChat 的电脑局域网 IPv4，端口保持 `9000`。
@@ -28,10 +28,25 @@ Sinmai / MelonLoader
 
 ## OSC 行为
 
-插件通过 UDP 发送 `/chatbox/input`，参数为 `(String, True, False)`。如果包体提供
-了元数据，Chatbox 会显示曲名、Artist、谱面、等级、定数、进度、达成率、DX 分、
-连击和 MISS。消息限制为 144 个字符、9 行，默认每秒最多更新一次并合并重复内容。
-曲目结束时会发送一次结算卡片，空闲时不会清除 Chatbox。
+插件通过 UDP 发送 `/chatbox/input`，参数为 `(String, True, False)`。它会持续显示
+主界面、选歌、正在游玩和结算卡片。如果包体提供元数据，正在游玩卡片还会显示曲名、
+Artist、谱面、等级、定数、进度、达成率、DX 分、连击和 MISS。消息限制为 144 个字符、
+9 行，默认每秒最多更新一次并合并重复内容；当前卡片每 5 秒强制重发，以便临时丢包后
+恢复。主界面和选歌示例：
+
+```text
+【舞萌DX】
+在主界面中
+版本号 1.55.00
+```
+
+```text
+【舞萌DX】
+42s 正在选歌：
+歌曲名 MASTER
+```
+
+曲目结束时会短暂保持结算卡片，随后切换到最新的主界面/选歌状态；空闲时不会发送空文本。
 
 VRChat 电脑需要允许专用网络配置文件的入站 UDP 9000。OSC 没有确认和重传，建议
 使用稳定的局域网 IPv4 或 DHCP 地址预约。
@@ -52,7 +67,7 @@ VRChat 电脑需要允许专用网络配置文件的入站 UDP 9000。OSC 没有
 .\build.ps1 -GamePackage "D:\Games\maimai\Package"
 ```
 
-脚本会生成 `dist/maimai_vrchat_osc-1.3.0.zip` 和编译后的游戏桥接目录，
+脚本会生成 `dist/maimai_vrchat_osc-1.4.0.zip` 和编译后的游戏桥接目录，
 不会把第三方或游戏程序集打进插件包。
 
 ## 测试

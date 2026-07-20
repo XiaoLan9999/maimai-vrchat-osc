@@ -4,10 +4,16 @@ import asyncio
 import json
 import os
 import sys
+import time
 
 from installer import ensure_bridge_installed
 from sse import SseClient
-from vrchat_osc import OscChatboxPublisher, format_playing, format_result
+from vrchat_osc import (
+    OscChatboxPublisher,
+    format_playing,
+    format_presence,
+    format_result,
+)
 
 try:
     import websockets
@@ -33,6 +39,9 @@ DEFAULT_CONFIG = {
     "osc_notification": False,
 }
 
+OSC_KEEPALIVE_SECONDS = 5.0
+OSC_RESULT_HOLD_SECONDS = 8.0
+
 
 def as_int(value, default=0):
     try:
@@ -53,6 +62,13 @@ async def main():
     events = asyncio.Queue()
     source = SseClient(loop, events)
     osc = OscChatboxPublisher()
+    osc_card = {
+        "text": format_presence({"status": "MENU"}),
+        "kind": "MENU",
+    }
+    result_hold_until = [0.0]
+    last_osc_send_at = [0.0]
+    osc_sent_once = [False]
     install_wakeup = asyncio.Event()
     install_state = {
         "state": "pending", "detail": "等待识别游戏目录",
@@ -118,6 +134,7 @@ async def main():
             osc_state.update({"state": "fail", "detail": "OSC 配置无效：" + str(exc), "hint": "目标应为局域网 IPv4，端口通常为 9000"})
             return
         last_osc_error[0] = None
+        osc_sent_once[0] = False
         if osc.enabled:
             osc_state.update({"state": "ok", "detail": "将发送到 {0}:{1}（UDP）".format(osc.host, osc.port), "hint": "VRChat 中需启用 OSC；UDP 无连接握手"})
         else:
@@ -133,10 +150,35 @@ async def main():
                 last_osc_error[0] = error
                 await log(ws, "error", "VRChat OSC 发送失败：" + error)
                 await send_status(ws)
-            return
+            return False
+        if sent:
+            last_osc_send_at[0] = time.monotonic()
+            if not osc_sent_once[0]:
+                osc_sent_once[0] = True
+                osc_state.update({
+                    "state": "ok",
+                    "detail": "正在持续发送到 {0}:{1}（UDP）".format(osc.host, osc.port),
+                    "hint": "每 5 秒保活；VRChat 中需启用 OSC",
+                })
+                await send_status(ws)
         if sent and last_osc_error[0] is not None:
             configure_osc()
             await send_status(ws)
+        return sent
+
+    async def set_card(ws, text, kind, force=False):
+        osc_card["text"] = text
+        osc_card["kind"] = kind
+        if osc.enabled:
+            await publish(ws, text, force=force)
+
+    async def keepalive_loop(ws):
+        while True:
+            await asyncio.sleep(1.0)
+            if not osc.enabled or not osc_card["text"]:
+                continue
+            if time.monotonic() - last_osc_send_at[0] >= OSC_KEEPALIVE_SECONDS:
+                await publish(ws, osc_card["text"], force=True)
 
     async def install_loop(ws):
         nonlocal install_state
@@ -177,10 +219,29 @@ async def main():
             elif "_error" in event:
                 stream_state.update({"state": "pending", "detail": "尚未连接；正在重试（{0}）".format(event["_error"]), "hint": "确认桥接已安装并启动游戏"})
                 await send_status(ws)
-            elif event.get("event") == "counts" and event.get("status") == "PLAYING" and osc.enabled and as_int(event.get("player"), 1) == as_int(cfg["osc_player"], 1):
-                await publish(ws, format_playing(event, bool(cfg["osc_show_artist"]), bool(cfg["osc_show_judgements"])))
-            elif event.get("event") == "settle" and osc.enabled and bool(cfg["osc_show_result"]) and as_int(event.get("player"), 1) == as_int(cfg["osc_player"], 1):
-                await publish(ws, format_result(event, bool(cfg["osc_show_artist"]), bool(cfg["osc_show_judgements"])), force=True)
+            elif event.get("event") == "presence":
+                status = str(event.get("status") or "MENU").upper()
+                if not (status == "MENU" and time.monotonic() < result_hold_until[0]):
+                    await set_card(
+                        ws,
+                        format_presence(event),
+                        status,
+                        force=osc_card["kind"] != status,
+                    )
+            elif event.get("event") == "counts" and event.get("status") == "PLAYING" and as_int(event.get("player"), 1) == as_int(cfg["osc_player"], 1):
+                await set_card(
+                    ws,
+                    format_playing(event, bool(cfg["osc_show_artist"]), bool(cfg["osc_show_judgements"])),
+                    "PLAYING",
+                )
+            elif event.get("event") == "settle" and bool(cfg["osc_show_result"]) and as_int(event.get("player"), 1) == as_int(cfg["osc_player"], 1):
+                result_hold_until[0] = time.monotonic() + OSC_RESULT_HOLD_SECONDS
+                await set_card(
+                    ws,
+                    format_result(event, bool(cfg["osc_show_artist"]), bool(cfg["osc_show_judgements"])),
+                    "RESULT",
+                    force=True,
+                )
 
     uri = "ws://{0}:{1}/ws/plugin?token={2}".format(host, port, token)
     async with websockets.connect(uri) as ws:
@@ -193,6 +254,7 @@ async def main():
         await send_status(ws)
         processor = asyncio.create_task(process_events(ws))
         installer = asyncio.create_task(install_loop(ws))
+        keepalive = asyncio.create_task(keepalive_loop(ws))
         try:
             async for raw in ws:
                 message = json.loads(raw)
@@ -204,6 +266,8 @@ async def main():
                         if key in cfg:
                             cfg[key] = value
                     configure_osc()
+                    if osc.enabled:
+                        await publish(ws, osc_card["text"], force=True)
                     source.start(str(cfg["endpoint"]))
                     install_wakeup.set()
                     await send_status(ws)
@@ -217,6 +281,8 @@ async def main():
                             install_wakeup.set()
                         elif key.startswith("osc_"):
                             configure_osc()
+                            if osc.enabled:
+                                await publish(ws, osc_card["text"], force=True)
                             await send_status(ws)
                 elif operation == "ping":
                     await ws.send(json.dumps({"op": "pong", "t": message.get("t")}))
@@ -225,7 +291,8 @@ async def main():
             osc.close()
             processor.cancel()
             installer.cancel()
-            for task in (processor, installer):
+            keepalive.cancel()
+            for task in (processor, installer, keepalive):
                 try:
                     await task
                 except asyncio.CancelledError:
