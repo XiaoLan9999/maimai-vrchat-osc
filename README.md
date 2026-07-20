@@ -14,13 +14,13 @@ Chatbox sender to disable.
 
 ## Installation
 
-1. Extract `maimai-vrchat-osc-2.1.0-win64.zip`.
+1. Extract `maimai-vrchat-osc-2.1.1-win64.zip`.
 2. Run `MaimaiVrchatOsc.exe`.
 3. Select the game `Package` directory containing `Sinmai.exe`.
 4. Set the IPv4 address of the VRChat computer. Use `127.0.0.1` on the same
    computer, or its LAN address such as `10.0.0.168`. Keep port `9000` unless
    VRChat uses a custom OSC port.
-5. Click **Save and start**. Restart the game once if the bridge was installed
+5. Click **Start OSC**. Restart the game once if the bridge was installed
    or updated.
 
 Enable `Action Menu > OSC > Enabled` in VRChat. The receiving computer must
@@ -28,7 +28,8 @@ allow inbound UDP 9000 on its Private network profile.
 
 ## Configuration
 
-The redesigned light interface controls the game path, bridge installation,
+The redesigned light interface uses Noto Sans for Chinese and Japanese, with
+Segoe UI for English. It controls the game path, bridge installation,
 VRChat target, player, update and keepalive intervals, retry count,
 Artist/judgement/result fields, version visibility, notification sound, and
 automatic startup. Its author link opens
@@ -38,8 +39,10 @@ automatic startup. Its author link opens
 %LOCALAPPDATA%\MaimaiVrchatOsc\config.json
 ```
 
-Applying settings restarts only the standalone OSC service; DGHub does not
-need to be restarted.
+Every field is saved automatically after editing, and behavior checkboxes are
+saved immediately when clicked. There is no separate Save button. While OSC is
+running, click **Reconnect** only when you want the saved settings to take
+effect in the active connection; DGHub does not need to be restarted.
 
 The interface and every generated OSC card support Simplified Chinese,
 Traditional Chinese, Japanese, and English. Difficulty names and status labels
@@ -119,7 +122,7 @@ Outputs:
 
 ```text
 dist\standalone-stage\MaimaiVrchatOsc.exe
-dist\maimai-vrchat-osc-2.1.0-win64.zip
+dist\maimai-vrchat-osc-2.1.1-win64.zip
 ```
 
 The legacy DGHub-only build remains available as `build-dghub-plugin.ps1` and

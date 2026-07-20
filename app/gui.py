@@ -5,6 +5,7 @@ import os
 import queue
 import webbrowser
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, ttk
 
 from config_store import APP_VERSION, default_config_path, save_config
@@ -23,7 +24,12 @@ ACCENT_DARK = "#A94D39"
 SAGE = "#59776A"
 SAGE_PALE = "#E7EFE9"
 SAND = "#EFE8DC"
-FONT = "Microsoft YaHei UI"
+FONT_CANDIDATES = {
+    "zh-CN": ("Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei"),
+    "zh-TW": ("Noto Sans TC", "Microsoft JhengHei UI", "Microsoft JhengHei"),
+    "ja-JP": ("Noto Sans JP", "Yu Gothic UI", "Yu Gothic"),
+    "en-US": ("Segoe UI Variable Text", "Segoe UI", "Arial"),
+}
 
 
 class App:
@@ -34,6 +40,8 @@ class App:
         self.events = queue.Queue()
         self.service = StandaloneService(resource_root, self.events)
         self._last_events = {}
+        self._auto_save_job = None
+        self._save_feedback_job = None
         self._make_vars()
         self._load_vars()
         self.root.geometry("700x900")
@@ -41,6 +49,7 @@ class App:
         self.root.configure(bg=BG)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self._build()
+        self._install_auto_save()
         self._poll_events()
         if self.config.get("auto_start", True):
             self.root.after(350, self.start)
@@ -64,6 +73,8 @@ class App:
         self.notification_var = tk.BooleanVar()
         self.auto_start_var = tk.BooleanVar()
         self.overall_var = tk.StringVar()
+        self.start_action_var = tk.StringVar()
+        self.save_state_var = tk.StringVar()
         self.status_vars = {
             "bridge": tk.StringVar(),
             "stream": tk.StringVar(),
@@ -81,6 +92,7 @@ class App:
         for child in self.root.winfo_children():
             child.destroy()
         language = self._language()
+        self.font = self._select_font(language)
         self.root.title("{0} {1}".format(tr(language, "app.title"), APP_VERSION))
         self._configure_styles()
 
@@ -113,14 +125,14 @@ class App:
             text=tr(language, "app.eyebrow"),
             bg=BG,
             fg=ACCENT,
-            font=(FONT, 9, "bold"),
+            font=(self.font, 9, "bold"),
         ).grid(row=0, column=0, sticky="w")
         tk.Label(
             header,
             text=tr(language, "app.heading"),
             bg=BG,
             fg=INK,
-            font=(FONT, 19, "bold"),
+            font=(self.font, 19, "bold"),
             wraplength=530,
             justify="left",
         ).grid(row=1, column=0, sticky="w", pady=(4, 2))
@@ -129,7 +141,7 @@ class App:
             text=tr(language, "app.subtitle"),
             bg=BG,
             fg=MUTED,
-            font=(FONT, 9),
+            font=(self.font, 9),
             wraplength=530,
             justify="left",
         ).grid(row=2, column=0, sticky="w")
@@ -139,7 +151,7 @@ class App:
             textvariable=self.overall_var,
             bg=SAGE_PALE,
             fg=SAGE,
-            font=(FONT, 9, "bold"),
+            font=(self.font, 9, "bold"),
             padx=14,
             pady=8,
         ).grid(row=0, column=1, rowspan=3, sticky="e")
@@ -190,6 +202,7 @@ class App:
                 preferences,
                 text=tr(language, key),
                 variable=variable,
+                command=self._save_behavior,
                 bg=CARD,
                 fg=INK,
                 activebackground=CARD,
@@ -200,7 +213,7 @@ class App:
                 anchor="w",
                 justify="left",
                 wraplength=120,
-                font=(FONT, 8),
+                font=(self.font, 8),
             ).grid(
                 row=1 + index // 4,
                 column=column,
@@ -240,7 +253,7 @@ class App:
             bg=SAGE_PALE,
             fg=INK,
             insertbackground=INK,
-            font=(FONT, 10),
+            font=(self.font, 10),
             padx=2,
             pady=2,
         )
@@ -250,21 +263,25 @@ class App:
         actions.grid(row=5, column=0, columnspan=2, sticky="ew", padx=20, pady=(4, 20))
         actions.grid_columnconfigure(0, weight=1)
         actions.grid_columnconfigure(1, weight=1)
-        self._button(
-            actions, tr(language, "action.save_start"), self.start, primary=True
-        ).grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
-        self._button(actions, tr(language, "action.save"), self.save).grid(
-            row=1, column=0, sticky="ew", padx=(0, 4)
+        self.start_action_var.set(
+            tr(language, "action.restart" if self.service.running else "action.start")
         )
+        self._button(
+            actions,
+            "",
+            self.start,
+            primary=True,
+            textvariable=self.start_action_var,
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 4), pady=(0, 8))
         self._button(actions, tr(language, "action.stop"), self.stop).grid(
-            row=1, column=1, sticky="ew", padx=(4, 0)
+            row=0, column=1, sticky="ew", padx=(4, 0), pady=(0, 8)
         )
         self._button(actions, tr(language, "action.test"), self.test_send).grid(
-            row=2, column=0, sticky="ew", padx=(0, 4), pady=(8, 0)
+            row=1, column=0, sticky="ew", padx=(0, 4)
         )
         self._button(
             actions, tr(language, "action.open_config"), self.open_config_dir
-        ).grid(row=2, column=1, sticky="ew", padx=(4, 0), pady=(8, 0))
+        ).grid(row=1, column=1, sticky="ew", padx=(4, 0))
 
         footer = tk.Frame(outer, bg=BG)
         footer.grid(row=4, column=0, sticky="ew", pady=(15, 0))
@@ -278,14 +295,21 @@ class App:
             ),
             bg=BG,
             fg=MUTED,
-            font=(FONT, 8),
+            font=(self.font, 8),
         ).grid(row=0, column=0, sticky="w")
+        tk.Label(
+            footer,
+            textvariable=self.save_state_var,
+            bg=BG,
+            fg=SAGE,
+            font=(self.font, 8, "bold"),
+        ).grid(row=1, column=0, columnspan=3, sticky="e", pady=(2, 0))
         tk.Label(
             footer,
             text=tr(language, "footer.author") + " ",
             bg=BG,
             fg=MUTED,
-            font=(FONT, 9),
+            font=(self.font, 9),
         ).grid(row=0, column=1, sticky="e")
         author = tk.Label(
             footer,
@@ -293,7 +317,7 @@ class App:
             bg=BG,
             fg=ACCENT,
             cursor="hand2",
-            font=(FONT, 9, "bold", "underline"),
+            font=(self.font, 9, "bold", "underline"),
         )
         author.grid(row=0, column=2, sticky="e")
         author.bind("<Button-1>", lambda _event: webbrowser.open_new("https://XiaoLan9999.net"))
@@ -302,6 +326,13 @@ class App:
     def _on_mousewheel(self, event):
         if hasattr(self, "canvas"):
             self.canvas.yview_scroll(-int(event.delta / 120), "units")
+
+    def _select_font(self, language):
+        available = set(tkfont.families(self.root))
+        for family in FONT_CANDIDATES.get(language, FONT_CANDIDATES["zh-CN"]):
+            if family in available:
+                return family
+        return "TkDefaultFont"
 
     def _configure_styles(self):
         style = ttk.Style(self.root)
@@ -313,7 +344,7 @@ class App:
             "Studio.TCheckbutton",
             background=CARD,
             foreground=INK,
-            font=(FONT, 9),
+            font=(self.font, 9),
             padding=2,
         )
         style.map("Studio.TCheckbutton", background=[("active", CARD)])
@@ -340,14 +371,13 @@ class App:
             bd=0,
         )
 
-    @staticmethod
-    def _section_title(parent, text, row, columnspan=2):
+    def _section_title(self, parent, text, row, columnspan=2):
         tk.Label(
             parent,
             text=text,
             bg=CARD,
             fg=INK,
-            font=(FONT, 12, "bold"),
+            font=(self.font, 12, "bold"),
         ).grid(
             row=row,
             column=0,
@@ -368,7 +398,7 @@ class App:
             pady=2,
         )
         box.grid_columnconfigure(0, weight=1)
-        tk.Label(box, text=label, bg=CARD, fg=MUTED, font=(FONT, 8)).grid(
+        tk.Label(box, text=label, bg=CARD, fg=MUTED, font=(self.font, 8)).grid(
             row=0, column=0, sticky="w", pady=(0, 2)
         )
         entry = tk.Entry(
@@ -382,7 +412,7 @@ class App:
             highlightthickness=1,
             highlightbackground=BORDER,
             highlightcolor=ACCENT,
-            font=(FONT, 9),
+            font=(self.font, 9),
         )
         entry.grid(row=1, column=0, sticky="ew", ipady=3)
         if browse:
@@ -394,7 +424,7 @@ class App:
         box = tk.Frame(parent, bg=CARD)
         box.grid(row=row, column=0, columnspan=2, sticky="ew", padx=20, pady=(3, 14))
         box.grid_columnconfigure(0, weight=1)
-        tk.Label(box, text=label, bg=CARD, fg=MUTED, font=(FONT, 8)).grid(
+        tk.Label(box, text=label, bg=CARD, fg=MUTED, font=(self.font, 8)).grid(
             row=0, column=0, sticky="w", pady=(0, 2)
         )
         combo = ttk.Combobox(
@@ -407,26 +437,25 @@ class App:
         combo.grid(row=1, column=0, sticky="ew")
         combo.bind("<<ComboboxSelected>>", self._on_language_changed)
 
-    @staticmethod
-    def _status_row(parent, row, label, variable):
+    def _status_row(self, parent, row, label, variable):
         line = tk.Frame(parent, bg=CARD)
         line.grid(row=row, column=0, sticky="ew", padx=20, pady=3)
         line.grid_columnconfigure(2, weight=1)
-        tk.Label(line, text="●", bg=CARD, fg=SAGE, font=(FONT, 7)).grid(
+        tk.Label(line, text="●", bg=CARD, fg=SAGE, font=(self.font, 7)).grid(
             row=0, column=0, sticky="w", padx=(0, 7)
         )
-        tk.Label(line, text=label, bg=CARD, fg=MUTED, font=(FONT, 8)).grid(
+        tk.Label(line, text=label, bg=CARD, fg=MUTED, font=(self.font, 8)).grid(
             row=0, column=1, sticky="w", padx=(0, 8)
         )
-        tk.Label(line, textvariable=variable, bg=CARD, fg=INK, font=(FONT, 9, "bold")).grid(
+        tk.Label(line, textvariable=variable, bg=CARD, fg=INK, font=(self.font, 9, "bold")).grid(
             row=0, column=2, sticky="w"
         )
 
-    @staticmethod
-    def _button(parent, text, command, primary=False):
+    def _button(self, parent, text, command, primary=False, textvariable=None):
         return tk.Button(
             parent,
             text=text,
+            textvariable=textvariable,
             command=command,
             relief="flat",
             bd=0,
@@ -435,7 +464,7 @@ class App:
             fg="white" if primary else INK,
             activeforeground="white" if primary else INK,
             cursor="hand2",
-            font=(FONT, 9, "bold" if primary else "normal"),
+            font=(self.font, 9, "bold" if primary else "normal"),
             padx=12,
             pady=8,
         )
@@ -480,6 +509,69 @@ class App:
             "auto_start": self.auto_start_var.get(),
         }
 
+    def _install_auto_save(self):
+        for variable in (
+            self.package_var,
+            self.endpoint_var,
+            self.host_var,
+            self.port_var,
+            self.player_var,
+            self.update_var,
+            self.keepalive_var,
+            self.retry_var,
+        ):
+            variable.trace_add("write", self._schedule_auto_save)
+
+    def _cancel_auto_save(self):
+        if self._auto_save_job is not None:
+            try:
+                self.root.after_cancel(self._auto_save_job)
+            except tk.TclError:
+                pass
+            self._auto_save_job = None
+
+    def _schedule_auto_save(self, *_args):
+        self._cancel_auto_save()
+        self._auto_save_job = self.root.after(700, self._run_auto_save)
+
+    def _run_auto_save(self):
+        self._auto_save_job = None
+        self.save(show_error=False)
+
+    def _save_behavior(self):
+        value = dict(self.config)
+        value.update(
+            {
+                "auto_detect_game": self.auto_detect_var.get(),
+                "auto_install_bridge": self.auto_install_var.get(),
+                "osc_show_version": self.version_var.get(),
+                "osc_show_artist": self.artist_var.get(),
+                "osc_show_judgements": self.judgements_var.get(),
+                "osc_show_result": self.result_var.get(),
+                "osc_notification": self.notification_var.get(),
+                "auto_start": self.auto_start_var.get(),
+            }
+        )
+        try:
+            self.config = save_config(value)
+        except (OSError, ValueError, json.JSONDecodeError):
+            self._set_save_feedback("status.incomplete_settings")
+            return
+        self._set_save_feedback(
+            "status.saved_pending" if self.service.running else "status.auto_saved"
+        )
+
+    def _set_save_feedback(self, key):
+        self.save_state_var.set(self._t(key))
+        if self._save_feedback_job is not None:
+            try:
+                self.root.after_cancel(self._save_feedback_job)
+            except tk.TclError:
+                pass
+        self._save_feedback_job = self.root.after(
+            2600, lambda: self.save_state_var.set("")
+        )
+
     def _on_language_changed(self, _event=None):
         was_running = self.service.running
         self._build()
@@ -490,14 +582,20 @@ class App:
         if selected:
             self.package_var.set(selected)
 
-    def save(self):
+    def save(self, show_error=True):
         try:
             self.config = save_config(self._read_vars())
         except (OSError, ValueError, json.JSONDecodeError) as exc:
-            messagebox.showerror(
-                self._t("dialog.invalid_config"), str(exc), parent=self.root
-            )
+            if show_error:
+                messagebox.showerror(
+                    self._t("dialog.invalid_config"), str(exc), parent=self.root
+                )
+            else:
+                self._set_save_feedback("status.incomplete_settings")
             return False
+        self._set_save_feedback(
+            "status.saved_pending" if self.service.running else "status.auto_saved"
+        )
         return True
 
     def start(self):
@@ -506,15 +604,19 @@ class App:
         self.service.start(self.config)
         self.overall_var.set(self._t("status.starting"))
         self.status_vars["osc"].set(self._t("status.starting"))
+        self.start_action_var.set(self._t("action.restart"))
 
     def stop(self):
         self.service.stop()
         self.overall_var.set(self._t("status.stopped"))
         self.status_vars["osc"].set(self._t("status.stopped"))
+        self.start_action_var.set(self._t("action.start"))
 
     def test_send(self):
         if not self.service.running:
             self.start()
+        if not self.service.running:
+            return
         self.service.test_send()
 
     @staticmethod
@@ -599,6 +701,7 @@ class App:
                     self._last_events["osc"] = event
                     if event.get("state") == "stopped":
                         self.overall_var.set(self._t("status.stopped"))
+                        self.start_action_var.set(self._t("action.start"))
                 self._render_statuses()
         except queue.Empty:
             pass
