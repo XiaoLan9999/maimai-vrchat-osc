@@ -53,6 +53,33 @@ def sanitize_chatbox_text(text):
     return normalized[:MAX_CHATBOX_CHARS]
 
 
+def _fit_lines(lines):
+    normalized = []
+    for value in lines:
+        normalized.extend(
+            str(value)
+            .replace("\0", "")
+            .replace("\r\n", "\n")
+            .replace("\r", "\n")
+            .split("\n")
+        )
+    if len(normalized) > MAX_CHATBOX_LINES:
+        normalized = normalized[: MAX_CHATBOX_LINES - 1] + [normalized[-1]]
+    if not normalized:
+        return ""
+    if len(normalized) == 1:
+        return normalized[0][:MAX_CHATBOX_CHARS]
+
+    first = normalized[0]
+    last = normalized[-1]
+    middle = "\n".join(normalized[1:-1])
+    available = MAX_CHATBOX_CHARS - len(first) - len(last) - 2
+    if available < 0:
+        first_available = max(0, MAX_CHATBOX_CHARS - len(last) - 1)
+        return first[:first_available] + "\n" + last
+    return "\n".join((first, middle[:available], last))
+
+
 def _number(value, digits=None):
     try:
         number = float(value)
@@ -99,7 +126,26 @@ def _chart_line(event):
     return " · ".join(parts)
 
 
-def _compose_lines(header, artist, chart, score, judgements):
+def _identity_header(event):
+    username = str(event.get("user_name") or "").strip()
+    return "『舞萌DX』" + (" " + username if username else "")
+
+
+def _version_line(event):
+    return "版本号 " + str(event.get("version") or "读取中").strip()
+
+
+def _constant(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if not math.isfinite(number) or number <= 0.0:
+        return ""
+    return "{0:.1f}".format(number)
+
+
+def _compose_lines(event, header, artist, chart, score, judgements):
     prefix = [header]
     if artist:
         prefix.append(artist)
@@ -108,6 +154,7 @@ def _compose_lines(header, artist, chart, score, judgements):
     suffix = [score]
     if judgements:
         suffix.append(judgements)
+    suffix.append(_version_line(event))
 
     def rendered():
         return "\n".join(prefix + suffix)
@@ -120,33 +167,53 @@ def _compose_lines(header, artist, chart, score, judgements):
     if len(rendered()) > MAX_CHATBOX_CHARS and len(prefix) > 1:
         excess = len(rendered()) - MAX_CHATBOX_CHARS
         prefix[-1] = prefix[-1][:max(8, len(prefix[-1]) - excess)]
-    return sanitize_chatbox_text(rendered())
+    return _fit_lines(prefix + suffix)
 
 
 def format_presence(event):
     status = str(event.get("status") or "MENU").upper()
+    header = _identity_header(event)
+    version = _version_line(event)
+    if status == "LOGIN":
+        header = "『舞萌DX』"
+        if bool(event.get("timer_infinite")):
+            countdown = "∞"
+        else:
+            countdown = "{0}s".format(max(0, int(_number(event.get("remaining")))))
+        return _fit_lines([header, "账号登陆中 " + countdown, version])
+    if status == "MODE_SELECT":
+        if bool(event.get("timer_infinite")):
+            countdown = "∞"
+        else:
+            countdown = "{0}s".format(max(0, int(_number(event.get("remaining")))))
+        return _fit_lines([header, countdown + " 正在选择模式", version])
     if status == "SELECTING":
         if bool(event.get("timer_infinite")):
             countdown = "∞"
         else:
             countdown = "{0}s".format(max(0, int(_number(event.get("remaining")))))
         title = str(event.get("title") or "未知歌曲").strip()
-        difficulty = str(
-            event.get("difficulty") or event.get("chart") or ""
-        ).strip()
-        song = " ".join(part for part in (title, difficulty) if part)
-        return sanitize_chatbox_text(
-            "『舞萌DX』\n{0} 正在选歌：\n{1}".format(countdown, song)
+        difficulty = str(event.get("difficulty") or event.get("chart") or "未知").strip()
+        level = str(event.get("level") or "未知").strip()
+        constant = _constant(event.get("constant")) or "未知"
+        author = str(event.get("author") or "未知").strip()
+        composer = str(event.get("composer") or event.get("artist") or "未知").strip()
+        return _fit_lines(
+            [
+                header,
+                countdown + " 正在选歌：",
+                title + " " + difficulty,
+                "难度：{0}  定数：{1}".format(level, constant),
+                "作者：{0}  曲师：{1}".format(author, composer),
+                version,
+            ]
         )
 
-    version = str(event.get("version") or "读取中").strip()
-    return sanitize_chatbox_text(
-        "『舞萌DX』\n主界面挂机中\n版本号 {0}".format(version)
-    )
+    return _fit_lines([header, "主界面挂机中", version])
 
 
 def format_playing(event, show_artist=True, show_judgements=True):
-    header = _song_line(event, "maimai DX")
+    header = _identity_header(event) + "\n" + _song_line(event, "maimai DX")
     artist = str(event.get("artist") or "").strip()
     if not show_artist:
         artist = ""
@@ -161,11 +228,11 @@ def format_playing(event, show_artist=True, show_judgements=True):
             _number(event.get("combo"))[:12],
             _number(event.get("miss"))[:12],
         )
-    return _compose_lines(header, artist, chart, score, judgements)
+    return _compose_lines(event, header, artist, chart, score, judgements)
 
 
 def format_result(event, show_artist=True, show_judgements=True):
-    header = _song_line(event, "maimai DX RESULT")
+    header = _identity_header(event) + "\n" + _song_line(event, "maimai DX RESULT")
     artist = str(event.get("artist") or "").strip()
     if not show_artist:
         artist = ""
@@ -180,7 +247,7 @@ def format_result(event, show_artist=True, show_judgements=True):
             _number(event.get("combo"))[:12],
             _number(event.get("miss"))[:12],
         )
-    return _compose_lines(header, artist, chart, score, judgements)
+    return _compose_lines(event, header, artist, chart, score, judgements)
 
 
 class OscChatboxPublisher:

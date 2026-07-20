@@ -12,7 +12,7 @@ using HarmonyLib;
 using Manager;
 using MelonLoader;
 
-[assembly: MelonInfo(typeof(MaiDGBridge.BridgeMod), "MaiDGBridge", "1.4.2", "XiaoLan9999", "")]
+[assembly: MelonInfo(typeof(MaiDGBridge.BridgeMod), "MaiDGBridge", "1.4.3", "XiaoLan9999", "")]
 [assembly: MelonGame("sega-interactive", "Sinmai")]
 
 namespace MaiDGBridge
@@ -23,6 +23,8 @@ namespace MaiDGBridge
         private readonly Snapshot[] _hookCounts = new Snapshot[2];
         private readonly Stopwatch _clock = Stopwatch.StartNew();
         private static BridgeMod _active;
+        private static object _entryProcess;
+        private static object _modeSelectProcess;
         private static object _musicSelectProcess;
         private static object _resultProcess;
         private SseServer _server;
@@ -31,6 +33,7 @@ namespace MaiDGBridge
         private bool _judgeHookObserved;
         private bool _metadataWarningLogged;
         private string _cachedVersion = string.Empty;
+        private string _cachedUserName = string.Empty;
         private long _lastPeriodicPublish;
         private long _lastPresencePublish;
         private long _lastErrorLog;
@@ -55,6 +58,8 @@ namespace MaiDGBridge
                 _server = new SseServer(config.Port);
                 _server.Start();
                 PatchJudgeResults();
+                PatchEntryProcess();
+                PatchModeSelectProcess();
                 PatchMusicSelect();
                 PatchResultProcess();
                 MelonLogger.Msg("MaiDGBridge listening on http://127.0.0.1:" + config.Port + "/events");
@@ -168,6 +173,8 @@ namespace MaiDGBridge
                 _active = null;
             }
             _musicSelectProcess = null;
+            _entryProcess = null;
+            _modeSelectProcess = null;
             _resultProcess = null;
             SseServer server = _server;
             _server = null;
@@ -193,6 +200,82 @@ namespace MaiDGBridge
             }
             harmony.Patch(original, null, new HarmonyMethod(postfix));
             MelonLogger.Msg("MaiDGBridge judge hook installed");
+        }
+
+        private void PatchEntryProcess()
+        {
+            System.Type type = AccessTools.TypeByName("Process.EntryProcess");
+            if (type == null)
+            {
+                MelonLogger.Warning("MaiDGBridge entry process type was not found");
+                return;
+            }
+
+            MethodInfo onStart = AccessTools.Method(type, "OnStart");
+            MethodInfo onRelease = AccessTools.Method(type, "OnRelease");
+            MethodInfo startPostfix = AccessTools.Method(typeof(BridgeMod), "EntryStartPostfix");
+            MethodInfo releasePostfix = AccessTools.Method(typeof(BridgeMod), "EntryReleasePostfix");
+            if (onStart == null || onRelease == null || startPostfix == null || releasePostfix == null)
+            {
+                MelonLogger.Warning("MaiDGBridge entry process hooks were not found");
+                return;
+            }
+
+            HarmonyLib.Harmony harmony = new HarmonyLib.Harmony("MaiDGBridge.EntryPresenceHook");
+            harmony.Patch(onStart, null, new HarmonyMethod(startPostfix));
+            harmony.Patch(onRelease, null, new HarmonyMethod(releasePostfix));
+            MelonLogger.Msg("MaiDGBridge entry process presence hook installed");
+        }
+
+        private static void EntryStartPostfix(object __instance)
+        {
+            _entryProcess = __instance;
+        }
+
+        private static void EntryReleasePostfix(object __instance)
+        {
+            if (ReferenceEquals(_entryProcess, __instance))
+            {
+                _entryProcess = null;
+            }
+        }
+
+        private void PatchModeSelectProcess()
+        {
+            System.Type type = AccessTools.TypeByName("Process.ModeSelect.ModeSelectProcess");
+            if (type == null)
+            {
+                MelonLogger.Warning("MaiDGBridge mode select process type was not found");
+                return;
+            }
+
+            MethodInfo onStart = AccessTools.Method(type, "OnStart");
+            MethodInfo onRelease = AccessTools.Method(type, "OnRelease");
+            MethodInfo startPostfix = AccessTools.Method(typeof(BridgeMod), "ModeSelectStartPostfix");
+            MethodInfo releasePostfix = AccessTools.Method(typeof(BridgeMod), "ModeSelectReleasePostfix");
+            if (onStart == null || onRelease == null || startPostfix == null || releasePostfix == null)
+            {
+                MelonLogger.Warning("MaiDGBridge mode select process hooks were not found");
+                return;
+            }
+
+            HarmonyLib.Harmony harmony = new HarmonyLib.Harmony("MaiDGBridge.ModeSelectPresenceHook");
+            harmony.Patch(onStart, null, new HarmonyMethod(startPostfix));
+            harmony.Patch(onRelease, null, new HarmonyMethod(releasePostfix));
+            MelonLogger.Msg("MaiDGBridge mode select presence hook installed");
+        }
+
+        private static void ModeSelectStartPostfix(object __instance)
+        {
+            _modeSelectProcess = __instance;
+        }
+
+        private static void ModeSelectReleasePostfix(object __instance)
+        {
+            if (ReferenceEquals(_modeSelectProcess, __instance))
+            {
+                _modeSelectProcess = null;
+            }
         }
 
         private void PatchMusicSelect()
@@ -280,6 +363,26 @@ namespace MaiDGBridge
                 _cachedVersion = version;
             }
             presence.Version = _cachedVersion;
+            string userName = ReadUserName();
+            if (!string.IsNullOrEmpty(userName))
+            {
+                _cachedUserName = userName;
+            }
+            presence.UserName = _cachedUserName;
+            if (_entryProcess != null)
+            {
+                presence.Status = "LOGIN";
+                presence.Remaining = ReadProcessRemaining(_entryProcess);
+                presence.TimerInfinite = ReadProcessTimerInfinite(_entryProcess);
+                return presence;
+            }
+            if (_modeSelectProcess != null)
+            {
+                presence.Status = "MODE_SELECT";
+                presence.Remaining = ReadProcessRemaining(_modeSelectProcess);
+                presence.TimerInfinite = ReadProcessTimerInfinite(_modeSelectProcess);
+                return presence;
+            }
             if (_resultProcess != null)
             {
                 presence.Status = "RESULT_SCREEN";
@@ -293,7 +396,7 @@ namespace MaiDGBridge
             }
 
             presence.Status = "SELECTING";
-            presence.DifficultyId = ToInt(ReadMember(process, "CurrentDifficulty"));
+            presence.DifficultyId = ToInt(ReadIndex(ReadMember(process, "CurrentDifficulty"), 0));
             presence.Difficulty = DifficultyName(presence.DifficultyId);
 
             object selected = InvokeMethod(process, "GetMusic", 0);
@@ -313,7 +416,30 @@ namespace MaiDGBridge
             }
             presence.MusicId = ToInt(ReadMember(music, "id"));
             presence.Title = ReadStringId(music, "name");
-            presence.Artist = ReadStringId(music, "artistName");
+            presence.Composer = ReadStringId(music, "artistName");
+            presence.Artist = presence.Composer;
+
+            object notes = ReadIndex(ReadMember(music, "notesData"), presence.DifficultyId);
+            if (notes != null)
+            {
+                presence.Author = ReadStringId(notes, "notesDesigner");
+                int musicLevelId = ToInt(ReadMember(notes, "musicLevelID"));
+                System.Type dataManagerType = AccessTools.TypeByName("Manager.DataManager");
+                object dataManager = ReadStaticMember(dataManagerType, "Instance");
+                MethodInfo getMusicLevel = dataManager == null
+                    ? null
+                    : FindMethod(dataManager.GetType(), "GetMusicLevel", false, typeof(int));
+                object musicLevel = getMusicLevel == null
+                    ? null
+                    : getMusicLevel.Invoke(dataManager, new object[] { musicLevelId });
+                presence.Constant = ToDecimal(ReadMember(notes, "level")) +
+                                    ToDecimal(ReadMember(notes, "levelDecimal")) / 10m;
+                presence.Level = ToText(ReadMember(musicLevel, "levelNum"));
+                if (string.IsNullOrEmpty(presence.Level) && presence.Constant > 0m)
+                {
+                    presence.Level = presence.Constant.ToString("0.#", CultureInfo.InvariantCulture);
+                }
+            }
 
             object timer = ReadMember(
                 ReadMember(ReadMember(ReadMember(process, "container"), "processManager"), "_genericManager"),
@@ -324,6 +450,120 @@ namespace MaiDGBridge
             return presence;
         }
 
+        private static int ReadProcessRemaining(object process)
+        {
+            object genericTimer = ReadGenericTimer(process);
+            object genericRemaining = ReadFirstMember(
+                genericTimer, "CountDownSecond", "Remaining", "CountDown", "Seconds");
+            if (genericRemaining != null)
+            {
+                return ToInt(genericRemaining);
+            }
+            object current = process;
+            for (int depth = 0; current != null && depth < 5; depth++)
+            {
+                object direct = ReadFirstMember(current, "CountDownSecond", "Remaining", "CountDown", "Seconds");
+                if (direct != null)
+                {
+                    return ToInt(direct);
+                }
+                object timer = ReadFirstMember(current, "_timer", "Timer", "_monitor_timer", "MonitorTimer");
+                if (timer == null)
+                {
+                    timer = ReadIndex(ReadFirstMember(current, "Monitors", "_monitors"), 0);
+                }
+                if (timer == null)
+                {
+                    object context = ReadFirstMember(current, "Context", "_context");
+                    if (context != null)
+                    {
+                        object state = InvokeNoArg(context, "GetCurrentState");
+                        if (state != null && !ReferenceEquals(state, current))
+                        {
+                            current = state;
+                            continue;
+                        }
+                    }
+                    break;
+                }
+                current = ReadIndex(timer, 0) ?? timer;
+            }
+            return 0;
+        }
+
+        private static bool ReadProcessTimerInfinite(object process)
+        {
+            object genericTimer = ReadGenericTimer(process);
+            object genericInfinite = ReadFirstMember(
+                genericTimer, "IsInfinity", "IsInfinite", "TimerInfinite");
+            if (genericInfinite != null)
+            {
+                return ToBool(genericInfinite);
+            }
+            object current = process;
+            for (int depth = 0; current != null && depth < 5; depth++)
+            {
+                object value = ReadFirstMember(current, "IsInfinity", "IsInfinite", "TimerInfinite");
+                if (value != null)
+                {
+                    return ToBool(value);
+                }
+                object timer = ReadFirstMember(current, "_timer", "Timer", "_monitor_timer", "MonitorTimer");
+                if (timer == null)
+                {
+                    timer = ReadIndex(ReadFirstMember(current, "Monitors", "_monitors"), 0);
+                }
+                if (timer == null)
+                {
+                    object context = ReadFirstMember(current, "Context", "_context");
+                    object state = context == null ? null : InvokeNoArg(context, "GetCurrentState");
+                    if (state != null && !ReferenceEquals(state, current))
+                    {
+                        current = state;
+                        continue;
+                    }
+                    break;
+                }
+                current = ReadIndex(timer, 0) ?? timer;
+            }
+            return false;
+        }
+
+        private static object ReadGenericTimer(object process)
+        {
+            object processManager = ReadMember(ReadMember(process, "container"), "processManager");
+            object genericManager = ReadMember(processManager, "_genericManager");
+            object timerController = ReadMember(genericManager, "_timerController");
+            return ReadIndex(timerController, 0);
+        }
+
+        private static object InvokeNoArg(object target, string name)
+        {
+            if (target == null)
+            {
+                return null;
+            }
+            MethodInfo method = FindMethod(target.GetType(), name, false);
+            return method == null ? null : method.Invoke(target, null);
+        }
+
+        private static object ReadFirstMember(object target, params string[] names)
+        {
+            if (target == null || names == null)
+            {
+                return null;
+            }
+            foreach (string name in names)
+            {
+                object value = ReadMember(target, name);
+                if (value != null)
+                {
+                    return value;
+                }
+            }
+            return null;
+        }
+
         private static object InvokeMethod(object target, string name, params object[] arguments)
         {
             if (target == null)
@@ -331,7 +571,18 @@ namespace MaiDGBridge
                 return null;
             }
             MethodInfo method = FindMethod(target.GetType(), name, false, typeof(int));
-            return method == null ? null : method.Invoke(target, arguments);
+            if (method != null)
+            {
+                return method.Invoke(target, arguments);
+            }
+            method = FindMethod(target.GetType(), name, false, typeof(long));
+            if (method == null || arguments == null || arguments.Length != 1)
+            {
+                return null;
+            }
+            return method.Invoke(
+                target,
+                new object[] { Convert.ToInt64(arguments[0], CultureInfo.InvariantCulture) });
         }
 
         private static object ReadIndex(object target, int index)
@@ -364,6 +615,62 @@ namespace MaiDGBridge
             {
                 return false;
             }
+        }
+
+        private static string ReadUserName()
+        {
+            try
+            {
+                System.Type userManagerType = AccessTools.TypeByName("Manager.UserDataManager");
+                object userManager = ReadStaticMember(userManagerType, "Instance");
+                if (userManager != null)
+                {
+                    for (int index = 0; index < 2; index++)
+                    {
+                        object user = InvokeMethod(userManager, "GetUserData", index);
+                        string name = ReadUserNameFromData(user);
+                        if (!string.IsNullOrEmpty(name))
+                        {
+                            return name;
+                        }
+                    }
+                }
+
+                System.Type netManagerType = AccessTools.TypeByName("Manager.NetDataManager");
+                object netManager = ReadStaticMember(netManagerType, "Instance");
+                if (netManager != null)
+                {
+                    for (int index = 0; index < 2; index++)
+                    {
+                        object user = InvokeMethod(netManager, "GetNetUserData", index);
+                        string name = ReadUserNameFromData(user);
+                        if (!string.IsNullOrEmpty(name))
+                        {
+                            return name;
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // User data is not available during boot and logout transitions.
+            }
+            return string.Empty;
+        }
+
+        private static string ReadUserNameFromData(object user)
+        {
+            if (user == null)
+            {
+                return string.Empty;
+            }
+            object detail = ReadFirstMember(user, "Detail", "detail");
+            string name = ToText(ReadFirstMember(detail, "userName", "UserName"));
+            if (string.IsNullOrEmpty(name))
+            {
+                name = ToText(ReadFirstMember(user, "userName", "UserName"));
+            }
+            return name;
         }
 
         private static string ReadVersion()
@@ -446,6 +753,7 @@ namespace MaiDGBridge
             {
                 CopyMetadata(_last[monitorIndex], counts);
             }
+            ApplyIdentity(counts);
 
             switch (NoteJudge.ConvertJudge(timing))
             {
@@ -510,7 +818,22 @@ namespace MaiDGBridge
             {
                 CopyMetadata(_last[player], snapshot);
             }
+            ApplyIdentity(snapshot);
             return snapshot;
+        }
+
+        private void ApplyIdentity(Snapshot snapshot)
+        {
+            if (string.IsNullOrEmpty(_cachedVersion))
+            {
+                _cachedVersion = ReadVersion();
+            }
+            if (string.IsNullOrEmpty(_cachedUserName))
+            {
+                _cachedUserName = ReadUserName();
+            }
+            snapshot.Version = _cachedVersion;
+            snapshot.UserName = _cachedUserName;
         }
 
         private static void CopyMetadata(Snapshot source, Snapshot target)
@@ -519,6 +842,8 @@ namespace MaiDGBridge
             target.Difficulty = source.Difficulty;
             target.Title = source.Title;
             target.Artist = source.Artist;
+            target.Author = source.Author;
+            target.Composer = source.Composer;
             target.Chart = source.Chart;
             target.Level = source.Level;
             target.Constant = source.Constant;
@@ -591,7 +916,8 @@ namespace MaiDGBridge
                 if (music != null)
                 {
                     snapshot.Title = ReadStringId(music, "name");
-                    snapshot.Artist = ReadStringId(music, "artistName");
+                    snapshot.Composer = ReadStringId(music, "artistName");
+                    snapshot.Artist = snapshot.Composer;
                 }
 
                 if (notes != null)
@@ -604,6 +930,7 @@ namespace MaiDGBridge
                         : getMusicLevel.Invoke(dataManager, new object[] { musicLevelId });
                     snapshot.Constant = ToDecimal(ReadMember(notes, "level")) +
                                         ToDecimal(ReadMember(notes, "levelDecimal")) / 10m;
+                    snapshot.Author = ReadStringId(notes, "notesDesigner");
                     snapshot.Level = ToText(ReadMember(musicLevel, "levelNum"));
                     if (string.IsNullOrEmpty(snapshot.Level) && snapshot.Constant > 0m)
                     {
@@ -655,12 +982,26 @@ namespace MaiDGBridge
                 PropertyInfo property = type.GetProperty(name, flags);
                 if (property != null)
                 {
-                    return property.GetValue(target, null);
+                    try
+                    {
+                        return property.GetValue(target, null);
+                    }
+                    catch
+                    {
+                        return null;
+                    }
                 }
                 FieldInfo field = type.GetField(name, flags);
                 if (field != null)
                 {
-                    return field.GetValue(target);
+                    try
+                    {
+                        return field.GetValue(target);
+                    }
+                    catch
+                    {
+                        return null;
+                    }
                 }
                 type = type.BaseType;
             }
@@ -675,12 +1016,26 @@ namespace MaiDGBridge
                 PropertyInfo property = type.GetProperty(name, flags);
                 if (property != null)
                 {
-                    return property.GetValue(null, null);
+                    try
+                    {
+                        return property.GetValue(null, null);
+                    }
+                    catch
+                    {
+                        return null;
+                    }
                 }
                 FieldInfo field = type.GetField(name, flags);
                 if (field != null)
                 {
-                    return field.GetValue(null);
+                    try
+                    {
+                        return field.GetValue(null);
+                    }
+                    catch
+                    {
+                        return null;
+                    }
                 }
                 type = type.BaseType;
             }
@@ -741,6 +1096,7 @@ namespace MaiDGBridge
     {
         public string Status = "MENU";
         public string Version = string.Empty;
+        public string UserName = string.Empty;
         public int Remaining;
         public bool TimerInfinite;
         public int MusicId;
@@ -748,33 +1104,44 @@ namespace MaiDGBridge
         public string Difficulty = string.Empty;
         public string Title = string.Empty;
         public string Artist = string.Empty;
+        public string Author = string.Empty;
+        public string Composer = string.Empty;
+        public string Level = string.Empty;
+        public decimal Constant;
 
         public bool SameValues(PresenceSnapshot other)
         {
             return other != null &&
                    Status == other.Status &&
                    Version == other.Version &&
+                   UserName == other.UserName &&
                    Remaining == other.Remaining &&
                    TimerInfinite == other.TimerInfinite &&
                    MusicId == other.MusicId &&
                    DifficultyId == other.DifficultyId &&
                    Difficulty == other.Difficulty &&
                    Title == other.Title &&
-                   Artist == other.Artist;
+                   Artist == other.Artist &&
+                   Author == other.Author &&
+                   Composer == other.Composer &&
+                   Level == other.Level &&
+                   Constant == other.Constant;
         }
 
         public string ToJson()
         {
             return string.Format(
                 CultureInfo.InvariantCulture,
-                "{{\"event\":\"presence\",\"status\":\"{0}\",\"version\":\"{1}\"," +
-                "\"remaining\":{2},\"timer_infinite\":{3},\"music_id\":{4}," +
-                "\"difficulty_id\":{5},\"difficulty\":\"{6}\",\"title\":\"{7}\"," +
-                "\"artist\":\"{8}\"}}",
-                Snapshot.JsonEscape(Status), Snapshot.JsonEscape(Version), Remaining,
-                TimerInfinite ? "true" : "false", MusicId, DifficultyId,
+                "{{\"event\":\"presence\",\"status\":\"{0}\",\"version\":\"{1}\",\"user_name\":\"{2}\"," +
+                "\"remaining\":{3},\"timer_infinite\":{4},\"music_id\":{5}," +
+                "\"difficulty_id\":{6},\"difficulty\":\"{7}\",\"title\":\"{8}\"," +
+                "\"artist\":\"{9}\",\"author\":\"{10}\",\"composer\":\"{11}\"," +
+                "\"level\":\"{12}\",\"constant\":{13:0.0}}}",
+                Snapshot.JsonEscape(Status), Snapshot.JsonEscape(Version), Snapshot.JsonEscape(UserName),
+                Remaining, TimerInfinite ? "true" : "false", MusicId, DifficultyId,
                 Snapshot.JsonEscape(Difficulty), Snapshot.JsonEscape(Title),
-                Snapshot.JsonEscape(Artist));
+                Snapshot.JsonEscape(Artist), Snapshot.JsonEscape(Author),
+                Snapshot.JsonEscape(Composer), Snapshot.JsonEscape(Level), Constant);
         }
     }
 
@@ -792,8 +1159,12 @@ namespace MaiDGBridge
         public decimal Achievement;
         public int MusicId;
         public int Difficulty = -1;
+        public string Version = string.Empty;
+        public string UserName = string.Empty;
         public string Title = string.Empty;
         public string Artist = string.Empty;
+        public string Author = string.Empty;
+        public string Composer = string.Empty;
         public string Chart = string.Empty;
         public string Level = string.Empty;
         public decimal Constant;
@@ -818,8 +1189,12 @@ namespace MaiDGBridge
                    DxScore == other.DxScore &&
                    MusicId == other.MusicId &&
                    Difficulty == other.Difficulty &&
+                   Version == other.Version &&
+                   UserName == other.UserName &&
                    Title == other.Title &&
                    Artist == other.Artist &&
+                   Author == other.Author &&
+                   Composer == other.Composer &&
                    Chart == other.Chart &&
                    Level == other.Level &&
                    Constant == other.Constant;
@@ -832,12 +1207,14 @@ namespace MaiDGBridge
                 "{{\"event\":\"{0}\",\"status\":\"{1}\",\"player\":{2},\"track\":{3}," +
                 "\"critical\":{4},\"perfect\":{5},\"great\":{6},\"good\":{7},\"miss\":{8}," +
                 "\"combo\":{9},\"dx_score\":{10},\"achievement\":{11:0.0000}," +
-                "\"music_id\":{12},\"difficulty_id\":{13},\"title\":\"{14}\"," +
-                "\"artist\":\"{15}\",\"chart\":\"{16}\",\"level\":\"{17}\"," +
-                "\"constant\":{18:0.0},\"progress\":{19:0.0000}}}",
+                "\"music_id\":{12},\"difficulty_id\":{13},\"version\":\"{14}\",\"user_name\":\"{15}\",\"title\":\"{16}\"," +
+                "\"artist\":\"{17}\",\"author\":\"{18}\",\"composer\":\"{19}\",\"chart\":\"{20}\",\"level\":\"{21}\"," +
+                "\"constant\":{22:0.0},\"progress\":{23:0.0000}}}",
                 eventName, status, Player, Track, Critical, Perfect, Great, Good, Miss,
-                Combo, DxScore, Achievement, MusicId, Difficulty, JsonEscape(Title),
-                JsonEscape(Artist), JsonEscape(Chart), JsonEscape(Level), Constant, Progress);
+                Combo, DxScore, Achievement, MusicId, Difficulty, JsonEscape(Version),
+                JsonEscape(UserName), JsonEscape(Title), JsonEscape(Artist),
+                JsonEscape(Author), JsonEscape(Composer), JsonEscape(Chart),
+                JsonEscape(Level), Constant, Progress);
         }
 
         internal static string JsonEscape(string value)

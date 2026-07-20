@@ -52,6 +52,23 @@ def test_card_state():
     menu = cards.handle({"event": "presence", "status": "MENU", "version": "Ver.CN1.56-B"}, 1.0)
     assert "Ver.CN1.56-B" in menu["text"]
     assert "主界面挂机中" in menu["text"]
+    login = cards.handle({
+        "event": "presence",
+        "status": "LOGIN",
+        "remaining": 37,
+        "version": "Ver.CN1.56-B",
+    }, 1.2)
+    assert "账号登陆中 37s" in login["text"]
+    assert "版本号 Ver.CN1.56-B" in login["text"]
+    mode = cards.handle({
+        "event": "presence",
+        "status": "MODE_SELECT",
+        "remaining": 18,
+        "version": "Ver.CN1.56-B",
+        "user_name": "小蓝",
+    }, 1.3)
+    assert "『舞萌DX』 小蓝" in mode["text"]
+    assert "18s 正在选择模式" in mode["text"]
     preview = cards.handle({
         "event": "counts",
         "status": "PLAYING",
@@ -70,8 +87,35 @@ def test_card_state():
         "remaining": 42,
         "title": "Test Song",
         "difficulty": "MASTER",
+        "level": "14",
+        "constant": 14.0,
+        "author": "Chart Author",
+        "composer": "Composer",
+        "user_name": "小蓝",
+        "version": "Ver.CN1.56-B",
     }, 2.0)
     assert "42s 正在选歌" in selecting["text"]
+    assert "『舞萌DX』 小蓝" in selecting["text"]
+    assert "难度：14  定数：14.0" in selecting["text"]
+    assert "作者：Chart Author  曲师：Composer" in selecting["text"]
+    assert "版本号 Ver.CN1.56-B" in selecting["text"]
+    long_selecting = cards.handle({
+        "event": "presence",
+        "status": "SELECTING",
+        "remaining": 40,
+        "title": "Very Long Song Title " * 20,
+        "difficulty": "Re:MASTER",
+        "level": "14+",
+        "constant": 14,
+        "author": "Long Chart Author " * 10,
+        "composer": "Long Composer " * 10,
+        "user_name": "小蓝",
+        "version": "Ver.CN1.56-B",
+    }, 2.1)
+    assert len(long_selecting["text"]) <= 144
+    assert len(long_selecting["text"].splitlines()) <= 9
+    assert long_selecting["text"].startswith("『舞萌DX』 小蓝\n")
+    assert long_selecting["text"].endswith("版本号 Ver.CN1.56-B")
     assert cards.handle({"event": "counts", "status": "PLAYING", "player": 2}, 3.0) is None
     cards.handle({"event": "state", "status": "PLAYING"}, 3.0)
     playing = cards.handle({
@@ -83,6 +127,8 @@ def test_card_state():
         "miss": 1,
     }, 3.1)
     assert "ACH 97.5000%" in playing["text"]
+    assert "『舞萌DX』 小蓝" in playing["text"]
+    assert "版本号 Ver.CN1.56-B" in playing["text"]
     result = cards.handle({
         "event": "settle",
         "status": "RESULT",
@@ -91,10 +137,26 @@ def test_card_state():
         "achievement": 95.1234,
     }, 4.0)
     assert "RESULT 95.1234%" in result["text"]
+    assert "『舞萌DX』 小蓝" in result["text"]
+    assert "版本号 Ver.CN1.56-B" in result["text"]
     assert cards.handle({"event": "presence", "status": "MENU", "version": "x"}, 5.0) is None
     assert cards.handle({"event": "presence", "status": "RESULT_SCREEN"}, 6.0) is None
     after_result = cards.handle({"event": "presence", "status": "MENU", "version": "x"}, 7.0)
     assert "版本号 x" in after_result["text"]
+
+    late_cards = CardState(config)
+    late_cards.handle({"event": "state", "status": "PLAYING"}, 8.0)
+    late_playing = late_cards.handle({
+        "event": "counts",
+        "status": "PLAYING",
+        "player": 1,
+        "user_name": "中途启动",
+        "version": "Ver.CN1.56-B",
+        "title": "Late Start",
+        "achievement": 1,
+    }, 8.1)
+    assert "『舞萌DX』 中途启动" in late_playing["text"]
+    assert late_playing["text"].endswith("版本号 Ver.CN1.56-B")
 
 
 def test_bridge_coexistence():

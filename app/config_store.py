@@ -9,8 +9,8 @@ import urllib.parse
 
 
 APP_NAME = "MaimaiVrchatOsc"
-APP_VERSION = "2.0.1"
-BRIDGE_VERSION = "1.4.2"
+APP_VERSION = "2.0.2"
+BRIDGE_VERSION = "1.4.3"
 
 DEFAULT_CONFIG = {
     "game_package": "",

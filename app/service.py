@@ -13,6 +13,7 @@ class CardState:
     def __init__(self, config):
         self.config = config
         self.version = ""
+        self.user_name = ""
         self.presence_status = "MENU"
         self.gameplay_active = False
         self.text = format_presence(self._menu_event())
@@ -21,7 +22,13 @@ class CardState:
         self.result_screen_active = False
 
     def _menu_event(self):
-        return {"status": "MENU", "version": self.version}
+        return {"status": "MENU", "version": self.version, "user_name": self.user_name}
+
+    def _with_identity(self, event):
+        current = dict(event)
+        current["version"] = self.version
+        current["user_name"] = self.user_name
+        return current
 
     def _set(self, text, kind, force=False):
         changed = text != self.text or kind != self.kind
@@ -57,6 +64,12 @@ class CardState:
     def handle(self, event, now=None):
         now = time.monotonic() if now is None else now
         name = event.get("event")
+        version = str(event.get("version") or "").strip()
+        user_name = str(event.get("user_name") or "").strip()
+        if version:
+            self.version = version
+        if user_name:
+            self.user_name = user_name
         if name == "state":
             status = str(event.get("status") or "").upper()
             if status == "PLAYING":
@@ -73,9 +86,8 @@ class CardState:
 
         if name == "presence":
             status = str(event.get("status") or "MENU").upper()
-            version = str(event.get("version") or "").strip()
-            if version:
-                self.version = version
+            if status == "LOGIN" and not user_name:
+                self.user_name = ""
             if status == "RESULT_SCREEN":
                 self.gameplay_active = False
                 self.result_screen_active = True
@@ -88,8 +100,7 @@ class CardState:
                 return None
             if status == "MENU":
                 return self._set(format_presence(self._menu_event()), "MENU")
-            current = dict(event)
-            current["version"] = self.version
+            current = self._with_identity(event)
             return self._set(format_presence(current), status)
 
         if name == "settle":
@@ -100,7 +111,7 @@ class CardState:
                 return None
             return self._set(
                 format_result(
-                    event,
+                    self._with_identity(event),
                     show_artist=self.config["osc_show_artist"],
                     show_judgements=self.config["osc_show_judgements"],
                 ),
@@ -116,6 +127,7 @@ class CardState:
             self.gameplay_active = True
             self.presence_status = "PLAYING"
             self.result_screen_active = False
+            event = self._with_identity(event)
             return self._set(
                 format_playing(
                     event,

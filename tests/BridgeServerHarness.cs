@@ -152,6 +152,8 @@ internal static class BridgeServerHarness
         {
             Player = 1,
             Track = 2,
+            Version = "Ver.CN1.56-B",
+            UserName = "玩家",
             Title = "quote \" and newline\n",
             Artist = "测试",
             Chart = "MASTER",
@@ -160,7 +162,9 @@ internal static class BridgeServerHarness
         };
         string json = snapshot.ToJson("counts", "PLAYING");
         if (!json.Contains("quote \\\" and newline\\n") ||
-            !json.Contains("\"progress\":0.5000"))
+            !json.Contains("\"progress\":0.5000") ||
+            !json.Contains("\"version\":\"Ver.CN1.56-B\"") ||
+            !json.Contains("\"user_name\":\"玩家\""))
         {
             throw new Exception("snapshot metadata JSON escaping failed: " + json);
         }
@@ -169,17 +173,25 @@ internal static class BridgeServerHarness
         {
             Status = "SELECTING",
             Version = "1.55.00",
+            UserName = "小\"蓝",
             Remaining = 42,
             MusicId = 12345,
             DifficultyId = 3,
             Difficulty = "MASTER",
             Title = "quote \" test",
-            Artist = "测试"
+            Artist = "测试",
+            Author = "谱\n师",
+            Composer = "曲师",
+            Level = "14+",
+            Constant = 14.0m
         };
         string presenceJson = presence.ToJson();
         if (!presenceJson.Contains("\"event\":\"presence\"") ||
             !presenceJson.Contains("\"remaining\":42") ||
-            !presenceJson.Contains("quote \\\" test"))
+            !presenceJson.Contains("quote \\\" test") ||
+            !presenceJson.Contains("\"user_name\":\"小\\\"蓝\"") ||
+            !presenceJson.Contains("\"constant\":14.0") ||
+            !presenceJson.Contains("谱\\n师"))
         {
             throw new Exception("presence JSON failed: " + presenceJson);
         }
