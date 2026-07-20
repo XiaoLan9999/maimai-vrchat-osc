@@ -1,7 +1,8 @@
 # Build and release output
+.builddeps/
 dist/
 release-stage-*/
-source-stage*/
+source-stage-*/
 verify-stage-*/
 
 # Local test dependencies and caches
@@ -9,10 +10,8 @@ testdeps/
 **/__pycache__/
 *.py[cod]
 
-# Compiled artifacts
-*.dll
-*.exe
-*.pdb
+# Generated PyInstaller specs
+*.spec
 
 # Editor and OS files
 .vs/

@@ -2,47 +2,54 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-This is the DGHub companion plugin for users who want maimai DX now-playing
-information in VRChat but do not use DG-LAB / 郊狼 output. It contains no
-device trigger, waveform, strength, or channel logic.
+This is a standalone Windows application with no DGHub runtime dependency. It
+reads the local SSE stream exposed by `MaiDGBridge` and continuously publishes
+menu, song-select, playing, and result cards to the VRChat Chatbox.
 
-## Architecture
-
-```text
-Sinmai / MelonLoader
-  -> MaiDGBridge.dll
-  -> http://127.0.0.1:8891/events (loopback SSE)
-  -> maimai_vrchat_osc DGHub plugin
-  -> VRChat OSC UDP /chatbox/input
-```
+It can run alongside the full
+[maimai-dghub-link](https://github.com/XiaoLan9999/maimai-dghub-link) plugin.
+Both programs may read `http://127.0.0.1:8891/events` concurrently. Disable
+VRChat OSC in the DGHub plugin when using this application so only one process
+publishes Chatbox messages.
 
 ## Installation
 
-1. Import `maimai_vrchat_osc-1.4.1.zip` into DGHub and enable it.
-2. Let the plugin detect the running game, or set the `Package` directory in
-   its configuration. The bundled bridge is installed with SHA-256 checking
-   and backups; it is not replaced while the game is running.
-3. Enable **VRChat OSC**, set the VRChat computer's LAN IPv4, and keep port
-   `9000` unless VRChat uses a custom OSC port.
-4. In VRChat, open the Action Menu and enable **OSC > Enabled**.
+1. Extract `maimai-vrchat-osc-2.0.0-win64.zip`.
+2. Run `MaimaiVrchatOsc.exe`.
+3. Select the game `Package` directory containing `Sinmai.exe`.
+4. Set the IPv4 address of the VRChat computer. Use `127.0.0.1` on the same
+   computer, or its LAN address such as `10.0.0.168`. Keep port `9000` unless
+   VRChat uses a custom OSC port.
+5. Click **Save and start**. Restart the game once if the bridge was installed
+   or updated.
 
-Use this package instead of the full [maimai-dghub-link](https://github.com/XiaoLan9999/maimai-dghub-link)
-package. Do not run both variants at the same time because both manage the
-same bridge service.
+Enable `Action Menu > OSC > Enabled` in VRChat. The receiving computer must
+allow inbound UDP 9000 on its Private network profile.
+
+## Configuration
+
+The native settings window controls the game path, bridge installation,
+VRChat target, player, update and keepalive intervals, Artist/judgement/result
+fields, notification sound, and automatic startup. Configuration is stored at:
+
+```text
+%LOCALAPPDATA%\MaimaiVrchatOsc\config.json
+```
+
+Applying settings restarts only the standalone OSC service; DGHub does not
+need to be restarted.
 
 ## OSC behavior
 
-The plugin sends `/chatbox/input` with `(String, True, False)` over UDP. It
-shows a persistent menu, song-select, now-playing, and result card. Messages
-are limited to 144 characters and 9 lines, deduplicated, and throttled to one
-update per second by default. The current card is force-sent every 5 seconds
-to recover from temporary UDP loss. Menu and song-select cards look like:
+Menu:
 
 ```text
 【舞萌DX】
 在主界面中
-版本号 1.55.00
+版本号 Ver.CN1.55-8
 ```
+
+Song select:
 
 ```text
 【舞萌DX】
@@ -50,37 +57,39 @@ to recover from temporary UDP loss. Menu and song-select cards look like:
 Song Name MASTER
 ```
 
-A result card is held briefly at track end; the next menu/select state then
-takes over. Idle never sends an empty card.
+Playing cards include song/chart metadata, progress, achievement, DX score,
+combo, and MISS when available. The result card remains active for the full
+result-process lifetime and changes only after entering menu or song select.
+The current card is force-sent every 5 seconds by default to recover from
+temporary UDP loss.
 
-VRChat's receiving computer must allow inbound UDP 9000 on its Private network
-profile. OSC has no acknowledgement or retransmission, so use a stable LAN
-IPv4 or DHCP reservation.
+## Bridge coexistence
 
-## Compatibility
+The application bundles `MaiDGBridge 1.4.1`. Installation verifies SHA-256,
+backs up replaced files under `Package/MaiDGBridge.backups/<timestamp>`, and
+never replaces a DLL while the game is running. A same-version bridge installed
+by DGHub is accepted by version and its recorded hash, preventing replacement
+loops between the two applications.
 
-The bridge is compiled against and member-checked with:
-
-| Package | Result |
-|---|---|
-| `SDGB1.50/Package` | Compile compatible |
-| `SDGB1.55-lazyPacker/Package` | Compile compatible and target runtime tested |
-| `SDEZ160/Package` | Compile compatible |
+Compile compatibility is covered for `SDGB1.50`, `SDGB1.55`, and `SDEZ160`.
+The target 1.55 package has runtime SSE and OSC coverage.
 
 ## Building
 
 ```powershell
-.\build.ps1 -GamePackage "D:\Games\maimai\Package"
+python -m pip install --target .builddeps -r requirements-build.txt
+.\build.ps1 -GamePackage "D:\Games\maimai\Package" -Python "C:\Path\python.exe"
 ```
 
-The script creates `dist/maimai_vrchat_osc-1.4.1.zip` and a compiled game
-mod directory. It does not include third-party or game assemblies.
+Outputs:
 
-## Tests
+```text
+dist\standalone-stage\MaimaiVrchatOsc.exe
+dist\maimai-vrchat-osc-2.0.0-win64.zip
+```
 
-The repository includes OSC encoding/limits/UDP tests, a stripped-plugin
-WebSocket + SSE + UDP integration test, installer backup/upgrade tests, a
-bridge SSE harness, and package hash validation.
+The legacy DGHub-only build remains available as `build-dghub-plugin.ps1` and
+in tags up to `v1.4.1`.
 
 ## License
 

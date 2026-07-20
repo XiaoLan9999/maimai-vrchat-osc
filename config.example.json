@@ -1,0 +1,16 @@
+{
+  "game_package": "D:\\Games\\maimai\\Package",
+  "auto_detect_game": true,
+  "auto_install_bridge": true,
+  "endpoint": "http://127.0.0.1:8891/events",
+  "osc_host": "127.0.0.1",
+  "osc_port": 9000,
+  "osc_player": 1,
+  "osc_update_interval": 1.0,
+  "osc_keepalive_interval": 5.0,
+  "osc_show_artist": true,
+  "osc_show_judgements": true,
+  "osc_show_result": true,
+  "osc_notification": false,
+  "auto_start": true
+}

@@ -2,43 +2,54 @@
 
 [English](README.md) | **简体中文**
 
-这是给不使用 DG-LAB / 郊狼输出的用户准备的 DGHUB 插件。它不包含设备
-触发、波形、强度或通道逻辑，只负责把舞萌 DX 的正在游玩信息发送到 VRChat。
+这是不依赖 DGHub 的独立 Windows 程序。它直接读取游戏内 `MaiDGBridge` 提供的
+本机 SSE 数据，并持续向 VRChat Chatbox 发送主界面、选歌、游玩和结算状态。
 
-## 架构
-
-```text
-Sinmai / MelonLoader
-  -> MaiDGBridge.dll
-  -> http://127.0.0.1:8891/events（本机 SSE）
-  -> maimai_vrchat_osc DGHUB 插件
-  -> VRChat OSC UDP /chatbox/input
-```
+它可以和完整版 [maimai-dghub-link](https://github.com/XiaoLan9999/maimai-dghub-link)
+同时运行：两者只会共同读取 `http://127.0.0.1:8891/events`，不会争用端口。
+同时使用时请在 DGHub 插件配置中关闭 VRChat OSC，避免两边重复向 Chatbox 发包。
 
 ## 安装
 
-1. 将 `maimai_vrchat_osc-1.4.1.zip` 导入 DGHUB 并启用。
-2. 让插件自动识别运行中的游戏，或在配置中填写 `Package` 目录。内置桥接会
-   经过 SHA-256 校验后安装，并在升级前备份；游戏运行时不会覆盖正在使用的 DLL。
-3. 启用“VRChat OSC”，填写运行 VRChat 的电脑局域网 IPv4，端口保持 `9000`。
-4. 在 VRChat 动作菜单中打开 `OSC > Enabled`。
+1. 解压 `maimai-vrchat-osc-2.0.0-win64.zip`。
+2. 运行 `MaimaiVrchatOsc.exe`。
+3. 选择包含 `Sinmai.exe` 的游戏 `Package` 目录。
+4. 填写运行 VRChat 的电脑 IPv4；同机填写 `127.0.0.1`，局域网电脑填写其地址，
+   例如 `10.0.0.168`。端口通常保持 `9000`。
+5. 点击“保存并启动”。如果软件安装或更新了桥接，退出并重新启动一次游戏。
 
-本包用于替代完整版 [maimai-dghub-link](https://github.com/XiaoLan9999/maimai-dghub-link)。
-两个版本都会管理同一个桥接服务，请不要同时运行。
+VRChat 中还需要打开 `Action Menu > OSC > Enabled`，接收电脑的专用网络防火墙
+需要允许入站 UDP 9000。
 
-## OSC 行为
+## 界面与配置
 
-插件通过 UDP 发送 `/chatbox/input`，参数为 `(String, True, False)`。它会持续显示
-主界面、选歌、正在游玩和结算卡片。如果包体提供元数据，正在游玩卡片还会显示曲名、
-Artist、谱面、等级、定数、进度、达成率、DX 分、连击和 MISS。消息限制为 144 个字符、
-9 行，默认每秒最多更新一次并合并重复内容；当前卡片每 5 秒强制重发，以便临时丢包后
-恢复。主界面和选歌示例：
+程序内可以直接修改：
+
+- 游戏 Package 目录和自动识别/安装；
+- VRChat IPv4、OSC 端口和显示玩家；
+- 普通刷新间隔与保活间隔；
+- Artist、连击/MISS、结算卡片和通知音；
+- 是否随软件启动自动连接。
+
+配置保存在：
+
+```text
+%LOCALAPPDATA%\MaimaiVrchatOsc\config.json
+```
+
+修改配置后点击“保存并启动”会重启独立 OSC 服务，不需要重启 DGHub。
+
+## OSC 状态
+
+主界面：
 
 ```text
 【舞萌DX】
 在主界面中
-版本号 1.55.00
+版本号 Ver.CN1.55-8
 ```
+
+选歌：
 
 ```text
 【舞萌DX】
@@ -46,34 +57,50 @@ Artist、谱面、等级、定数、进度、达成率、DX 分、连击和 MISS
 歌曲名 MASTER
 ```
 
-曲目结束时会短暂保持结算卡片，随后切换到最新的主界面/选歌状态；空闲时不会发送空文本。
+游玩时显示曲名、谱面、进度、达成率、DX 分、连击和 MISS；结算画面存在期间
+持续保持结算卡片，离开结算后才切换到主界面或选歌。当前卡片默认每 5 秒强制
+重发一次，用于恢复临时 UDP 丢包。
 
-VRChat 电脑需要允许专用网络配置文件的入站 UDP 9000。OSC 没有确认和重传，建议
-使用稳定的局域网 IPv4 或 DHCP 地址预约。
+## 桥接与共存
 
-## 兼容性
+软件内置 `MaiDGBridge 1.4.1`，自动安装前会校验 SHA-256，并将旧文件备份到：
 
-桥接已针对以下包体编译和检查：
+```text
+Package\MaiDGBridge.backups\<时间戳>
+```
+
+游戏运行中不会覆盖已加载的 DLL。独立程序会接受 DGHub 安装的同版本桥接，
+即使两个发布包里的 DLL 构建哈希不同，也不会反复互相覆盖。
+
+已完成编译兼容检查：
 
 | 包体 | 结果 |
 |---|---|
 | `SDGB1.50/Package` | 编译兼容 |
-| `SDGB1.55-lazyPacker/Package` | 编译兼容、目标版本实机验证 |
+| `SDGB1.55-lazyPacker/Package` | 编译兼容、实机数据验证 |
 | `SDEZ160/Package` | 编译兼容 |
 
 ## 构建
 
 ```powershell
-.\build.ps1 -GamePackage "D:\Games\maimai\Package"
+python -m pip install --target .builddeps -r requirements-build.txt
+.\build.ps1 -GamePackage "D:\Games\maimai\Package" -Python "C:\Path\python.exe"
 ```
 
-脚本会生成 `dist/maimai_vrchat_osc-1.4.1.zip` 和编译后的游戏桥接目录，
-不会把第三方或游戏程序集打进插件包。
+输出：
+
+```text
+dist\standalone-stage\MaimaiVrchatOsc.exe
+dist\maimai-vrchat-osc-2.0.0-win64.zip
+```
+
+旧的 DGHub-only 插件构建脚本保留为 `build-dghub-plugin.ps1`，`v1.4.1` 及更早
+标签仍可用于复现旧版。
 
 ## 测试
 
-仓库包含 OSC 编码/限制/UDP 测试、剥离插件 WebSocket + SSE + UDP 端到端测试、
-安装器备份/升级测试、桥接 SSE 测试以及 ZIP 哈希校验。
+仓库包含配置校验、OSC 编码、状态机、SSE→UDP 保活、结算生命周期、桥接共存、
+自动安装/备份以及独立 EXE 发布包检查。
 
 ## 许可证
 
