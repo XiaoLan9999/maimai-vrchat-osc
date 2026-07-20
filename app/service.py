@@ -86,7 +86,7 @@ class CardState:
 
         if name == "presence":
             status = str(event.get("status") or "MENU").upper()
-            if status == "LOGIN" and not user_name:
+            if status in ("LOGIN", "MENU"):
                 self.user_name = ""
             if status == "RESULT_SCREEN":
                 self.gameplay_active = False

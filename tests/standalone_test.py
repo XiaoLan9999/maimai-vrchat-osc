@@ -49,9 +49,15 @@ def test_config():
 def test_card_state():
     config = normalize_config(DEFAULT_CONFIG)
     cards = CardState(config)
-    menu = cards.handle({"event": "presence", "status": "MENU", "version": "Ver.CN1.56-B"}, 1.0)
+    menu = cards.handle({
+        "event": "presence",
+        "status": "MENU",
+        "version": "Ver.CN1.56-B",
+        "user_name": "游客",
+    }, 1.0)
     assert "Ver.CN1.56-B" in menu["text"]
     assert "主界面挂机中" in menu["text"]
+    assert "游客" not in menu["text"]
     login = cards.handle({
         "event": "presence",
         "status": "LOGIN",
@@ -69,6 +75,13 @@ def test_card_state():
     }, 1.3)
     assert "『舞萌DX』 小蓝" in mode["text"]
     assert "18s 正在选择模式" in mode["text"]
+    loading = cards.handle({
+        "event": "presence",
+        "status": "LOADING",
+        "user_name": "小蓝",
+        "version": "Ver.CN1.56-B",
+    }, 1.4)
+    assert loading["text"] == "『舞萌DX』 小蓝\n游戏加载中\n版本号 Ver.CN1.56-B"
     preview = cards.handle({
         "event": "counts",
         "status": "PLAYING",

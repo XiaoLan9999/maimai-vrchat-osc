@@ -137,6 +137,16 @@ namespace MAI2System
 
 internal static class BridgeServerHarness
 {
+    private sealed class FakeSelectProcess
+    {
+        public int[] CurrentDifficulty = { 3, 3 };
+    }
+
+    private sealed class FakeSelectedMusic
+    {
+        public int Difficulty = 4;
+    }
+
     public static int Main()
     {
         System.Reflection.MethodInfo readVersion = typeof(MaiDGBridge.BridgeMod).GetMethod(
@@ -146,6 +156,37 @@ internal static class BridgeServerHarness
         if (version != "Ver.CN1.56-B")
         {
             throw new Exception("version lookup failed: " + version);
+        }
+
+        System.Reflection.MethodInfo readDifficulty = typeof(MaiDGBridge.BridgeMod).GetMethod(
+            "ReadSelectedDifficulty",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        int selectedDifficulty = (int)readDifficulty.Invoke(
+            null, new object[] { new FakeSelectProcess(), new FakeSelectedMusic() });
+        int fallbackDifficulty = (int)readDifficulty.Invoke(
+            null, new object[] { new FakeSelectProcess(), new object() });
+        if (selectedDifficulty != 4 || fallbackDifficulty != 3)
+        {
+            throw new Exception("selected difficulty resolution failed");
+        }
+
+        System.Reflection.FieldInfo sessionStarted = typeof(MaiDGBridge.BridgeMod).GetField(
+            "_sessionStarted",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        System.Reflection.MethodInfo capturePresence = typeof(MaiDGBridge.BridgeMod).GetMethod(
+            "CapturePresence",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        MaiDGBridge.BridgeMod bridge = new MaiDGBridge.BridgeMod();
+        sessionStarted.SetValue(null, false);
+        MaiDGBridge.PresenceSnapshot preLogin =
+            (MaiDGBridge.PresenceSnapshot)capturePresence.Invoke(bridge, null);
+        sessionStarted.SetValue(null, true);
+        MaiDGBridge.PresenceSnapshot loading =
+            (MaiDGBridge.PresenceSnapshot)capturePresence.Invoke(bridge, null);
+        sessionStarted.SetValue(null, false);
+        if (preLogin.Status != "MENU" || preLogin.UserName != string.Empty || loading.Status != "LOADING")
+        {
+            throw new Exception("session presence transition failed");
         }
 
         MaiDGBridge.Snapshot snapshot = new MaiDGBridge.Snapshot

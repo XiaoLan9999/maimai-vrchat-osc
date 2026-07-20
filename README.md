@@ -14,7 +14,7 @@ Chatbox sender to disable.
 
 ## Installation
 
-1. Extract `maimai-vrchat-osc-2.0.2-win64.zip`.
+1. Extract `maimai-vrchat-osc-2.0.3-win64.zip`.
 2. Run `MaimaiVrchatOsc.exe`.
 3. Select the game `Package` directory containing `Sinmai.exe`.
 4. Set the IPv4 address of the VRChat computer. Use `127.0.0.1` on the same
@@ -59,6 +59,10 @@ Login and mode select:
 『舞萌DX』 User Name
 20s 正在选择模式
 版本号 Ver.CN1.56-B
+
+『舞萌DX』 User Name
+游戏加载中
+版本号 Ver.CN1.56-B
 ```
 
 Song select:
@@ -81,7 +85,7 @@ game version remains in the footer for every card.
 
 ## Bridge coexistence
 
-The application bundles `MaiDGBridge 1.4.3`. Installation verifies SHA-256,
+The application bundles `MaiDGBridge 1.4.4`. Installation verifies SHA-256,
 backs up replaced files under `Package/MaiDGBridge.backups/<timestamp>`, and
 never replaces a DLL while the game is running. A same-version bridge installed
 by DGHub is accepted by version and its recorded hash, preventing replacement
@@ -101,7 +105,7 @@ Outputs:
 
 ```text
 dist\standalone-stage\MaimaiVrchatOsc.exe
-dist\maimai-vrchat-osc-2.0.2-win64.zip
+dist\maimai-vrchat-osc-2.0.3-win64.zip
 ```
 
 The legacy DGHub-only build remains available as `build-dghub-plugin.ps1` and

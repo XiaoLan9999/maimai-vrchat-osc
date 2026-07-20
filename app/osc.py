@@ -187,6 +187,8 @@ def format_presence(event):
         else:
             countdown = "{0}s".format(max(0, int(_number(event.get("remaining")))))
         return _fit_lines([header, countdown + " 正在选择模式", version])
+    if status == "LOADING":
+        return _fit_lines([header, "游戏加载中", version])
     if status == "SELECTING":
         if bool(event.get("timer_infinite")):
             countdown = "∞"

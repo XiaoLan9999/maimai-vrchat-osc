@@ -12,7 +12,7 @@ using HarmonyLib;
 using Manager;
 using MelonLoader;
 
-[assembly: MelonInfo(typeof(MaiDGBridge.BridgeMod), "MaiDGBridge", "1.4.3", "XiaoLan9999", "")]
+[assembly: MelonInfo(typeof(MaiDGBridge.BridgeMod), "MaiDGBridge", "1.4.4", "XiaoLan9999", "")]
 [assembly: MelonGame("sega-interactive", "Sinmai")]
 
 namespace MaiDGBridge
@@ -27,6 +27,7 @@ namespace MaiDGBridge
         private static object _modeSelectProcess;
         private static object _musicSelectProcess;
         private static object _resultProcess;
+        private static bool _sessionStarted;
         private SseServer _server;
         private PresenceSnapshot _lastPresence;
         private bool _wasInGame;
@@ -176,6 +177,7 @@ namespace MaiDGBridge
             _entryProcess = null;
             _modeSelectProcess = null;
             _resultProcess = null;
+            _sessionStarted = false;
             SseServer server = _server;
             _server = null;
             if (server != null)
@@ -230,6 +232,11 @@ namespace MaiDGBridge
         private static void EntryStartPostfix(object __instance)
         {
             _entryProcess = __instance;
+            _sessionStarted = false;
+            if (_active != null)
+            {
+                _active._cachedUserName = string.Empty;
+            }
         }
 
         private static void EntryReleasePostfix(object __instance)
@@ -237,6 +244,7 @@ namespace MaiDGBridge
             if (ReferenceEquals(_entryProcess, __instance))
             {
                 _entryProcess = null;
+                _sessionStarted = HasEnteredUser();
             }
         }
 
@@ -268,6 +276,7 @@ namespace MaiDGBridge
         private static void ModeSelectStartPostfix(object __instance)
         {
             _modeSelectProcess = __instance;
+            _sessionStarted = true;
         }
 
         private static void ModeSelectReleasePostfix(object __instance)
@@ -306,6 +315,7 @@ namespace MaiDGBridge
         private static void MusicSelectStartPostfix(object __instance)
         {
             _musicSelectProcess = __instance;
+            _sessionStarted = true;
         }
 
         private static void MusicSelectReleasePostfix(object __instance)
@@ -344,6 +354,7 @@ namespace MaiDGBridge
         private static void ResultStartPostfix(object __instance)
         {
             _resultProcess = __instance;
+            _sessionStarted = true;
         }
 
         private static void ResultReleasePostfix(object __instance)
@@ -363,12 +374,15 @@ namespace MaiDGBridge
                 _cachedVersion = version;
             }
             presence.Version = _cachedVersion;
-            string userName = ReadUserName();
-            if (!string.IsNullOrEmpty(userName))
+            if (_sessionStarted)
             {
-                _cachedUserName = userName;
+                string userName = ReadUserName();
+                if (!string.IsNullOrEmpty(userName))
+                {
+                    _cachedUserName = userName;
+                }
+                presence.UserName = _cachedUserName;
             }
-            presence.UserName = _cachedUserName;
             if (_entryProcess != null)
             {
                 presence.Status = "LOGIN";
@@ -391,14 +405,11 @@ namespace MaiDGBridge
             object process = _musicSelectProcess;
             if (process == null)
             {
-                presence.Status = "MENU";
+                presence.Status = _sessionStarted ? "LOADING" : "MENU";
                 return presence;
             }
 
             presence.Status = "SELECTING";
-            presence.DifficultyId = ToInt(ReadIndex(ReadMember(process, "CurrentDifficulty"), 0));
-            presence.Difficulty = DifficultyName(presence.DifficultyId);
-
             object selected = InvokeMethod(process, "GetMusic", 0);
             if (selected == null)
             {
@@ -409,6 +420,8 @@ namespace MaiDGBridge
             {
                 musicSelectData = selected;
             }
+            presence.DifficultyId = ReadSelectedDifficulty(process, musicSelectData);
+            presence.Difficulty = DifficultyName(presence.DifficultyId);
             object music = ReadMember(musicSelectData, "MusicData");
             if (music == null)
             {
@@ -419,7 +432,11 @@ namespace MaiDGBridge
             presence.Composer = ReadStringId(music, "artistName");
             presence.Artist = presence.Composer;
 
-            object notes = ReadIndex(ReadMember(music, "notesData"), presence.DifficultyId);
+            object notes = ReadIndex(ReadMember(musicSelectData, "ScoreData"), presence.DifficultyId);
+            if (notes == null)
+            {
+                notes = ReadIndex(ReadMember(music, "notesData"), presence.DifficultyId);
+            }
             if (notes != null)
             {
                 presence.Author = ReadStringId(notes, "notesDesigner");
@@ -448,6 +465,18 @@ namespace MaiDGBridge
             presence.Remaining = ToInt(ReadMember(timerEntry, "CountDownSecond"));
             presence.TimerInfinite = ToBool(ReadMember(timerEntry, "IsInfinity"));
             return presence;
+        }
+
+        private static int ReadSelectedDifficulty(object process, object selected)
+        {
+            object selectedValue = ReadMember(selected, "Difficulty");
+            int selectedDifficulty = ToInt(selectedValue);
+            if (selectedValue != null && selectedDifficulty >= 0 && selectedDifficulty < 6)
+            {
+                return selectedDifficulty;
+            }
+            object current = ReadIndex(ReadMember(process, "CurrentDifficulty"), 0);
+            return current == null ? -1 : ToInt(current);
         }
 
         private static int ReadProcessRemaining(object process)
@@ -656,6 +685,33 @@ namespace MaiDGBridge
                 // User data is not available during boot and logout transitions.
             }
             return string.Empty;
+        }
+
+        private static bool HasEnteredUser()
+        {
+            try
+            {
+                System.Type userManagerType = AccessTools.TypeByName("Manager.UserDataManager");
+                object userManager = ReadStaticMember(userManagerType, "Instance");
+                if (userManager == null)
+                {
+                    return false;
+                }
+                for (int index = 0; index < 2; index++)
+                {
+                    object user = InvokeMethod(userManager, "GetUserData", index);
+                    if (ToBool(ReadMember(user, "IsEntry")) ||
+                        ToBool(ReadMember(user, "IsActiveUser")))
+                    {
+                        return true;
+                    }
+                }
+            }
+            catch
+            {
+                return false;
+            }
+            return false;
         }
 
         private static string ReadUserNameFromData(object user)
