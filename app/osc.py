@@ -6,6 +6,8 @@ import socket
 import struct
 import time
 
+from i18n import DEFAULT_LANGUAGE, normalize_language, tr
+
 
 CHATBOX_ADDRESS = "/chatbox/input"
 MAX_CHATBOX_CHARS = 144
@@ -100,9 +102,34 @@ def _song_line(event, fallback):
     return "♪ {0} · TRACK {1}".format(fallback, _number(track))
 
 
-def _chart_line(event):
+def _localized_chart(value, language):
+    chart = str(value or "").strip()
+    if normalize_language(language) == "zh-CN":
+        return {
+            "BASIC": "基础",
+            "ADVANCED": "高级",
+            "EXPERT": "专家",
+            "MASTER": "大师",
+            "RE:MASTER": "宗师",
+            "REMASTER": "宗师",
+        }.get(chart.upper(), chart)
+    if normalize_language(language) == "zh-TW":
+        return {
+            "BASIC": "基礎",
+            "ADVANCED": "進階",
+            "EXPERT": "專家",
+            "MASTER": "大師",
+            "RE:MASTER": "宗師",
+            "REMASTER": "宗師",
+        }.get(chart.upper(), chart)
+    if chart.upper() == "REMASTER":
+        return "Re:MASTER"
+    return chart
+
+
+def _chart_line(event, language=DEFAULT_LANGUAGE):
     parts = []
-    chart = str(event.get("chart") or event.get("difficulty") or "").strip()
+    chart = _localized_chart(event.get("chart") or event.get("difficulty"), language)
     level = str(event.get("level") or "").strip()
     if chart:
         parts.append(chart)
@@ -113,7 +140,7 @@ def _chart_line(event):
     except (TypeError, ValueError):
         constant = 0.0
     if math.isfinite(constant) and constant > 0.0:
-        parts.append("定数 " + _number(constant, 1).rstrip("0").rstrip("."))
+        parts.append(tr(language, "osc.constant", value=_number(constant, 1)))
     track = event.get("track")
     if track is not None:
         parts.append("TRACK " + _number(track))
@@ -126,13 +153,16 @@ def _chart_line(event):
     return " · ".join(parts)
 
 
-def _identity_header(event):
+def _identity_header(event, language=DEFAULT_LANGUAGE):
     username = str(event.get("user_name") or "").strip()
-    return "『舞萌DX』" + (" " + username if username else "")
+    return tr(language, "osc.brand") + (" " + username if username else "")
 
 
-def _version_line(event):
-    return "版本号 " + str(event.get("version") or "读取中").strip()
+def _version_line(event, language=DEFAULT_LANGUAGE, show_version=True):
+    if not show_version:
+        return ""
+    value = str(event.get("version") or tr(language, "osc.version_loading")).strip()
+    return tr(language, "osc.version", value=value)
 
 
 def _constant(value):
@@ -145,7 +175,16 @@ def _constant(value):
     return "{0:.1f}".format(number)
 
 
-def _compose_lines(event, header, artist, chart, score, judgements):
+def _compose_lines(
+    event,
+    header,
+    artist,
+    chart,
+    score,
+    judgements,
+    language=DEFAULT_LANGUAGE,
+    show_version=True,
+):
     prefix = [header]
     if artist:
         prefix.append(artist)
@@ -154,7 +193,9 @@ def _compose_lines(event, header, artist, chart, score, judgements):
     suffix = [score]
     if judgements:
         suffix.append(judgements)
-    suffix.append(_version_line(event))
+    version = _version_line(event, language, show_version)
+    if version:
+        suffix.append(version)
 
     def rendered():
         return "\n".join(prefix + suffix)
@@ -170,56 +211,84 @@ def _compose_lines(event, header, artist, chart, score, judgements):
     return _fit_lines(prefix + suffix)
 
 
-def format_presence(event):
+def format_presence(event, language=DEFAULT_LANGUAGE, show_version=True):
     status = str(event.get("status") or "MENU").upper()
-    header = _identity_header(event)
-    version = _version_line(event)
+    header = _identity_header(event, language)
+    version = _version_line(event, language, show_version)
+
+    def lines(*values):
+        return _fit_lines([value for value in values if value])
+
+    if status == "STARTING":
+        return lines(header, tr(language, "osc.starting"), version)
     if status == "LOGIN":
-        header = "『舞萌DX』"
+        header = tr(language, "osc.brand")
         if bool(event.get("timer_infinite")):
             countdown = "∞"
         else:
             countdown = "{0}s".format(max(0, int(_number(event.get("remaining")))))
-        return _fit_lines([header, "账号登陆中 " + countdown, version])
+        return lines(header, tr(language, "osc.login", countdown=countdown), version)
     if status == "MODE_SELECT":
         if bool(event.get("timer_infinite")):
             countdown = "∞"
         else:
             countdown = "{0}s".format(max(0, int(_number(event.get("remaining")))))
-        return _fit_lines([header, countdown + " 正在选择模式", version])
+        return lines(header, tr(language, "osc.mode_select", countdown=countdown), version)
+    if status in ("MAP_SELECT", "TICKET_SELECT", "CHARACTER_SELECT"):
+        if bool(event.get("timer_infinite")):
+            countdown = "∞"
+        else:
+            countdown = "{0}s".format(max(0, int(_number(event.get("remaining")))))
+        keys = {
+            "MAP_SELECT": "osc.map_select",
+            "TICKET_SELECT": "osc.ticket_select",
+            "CHARACTER_SELECT": "osc.character_select",
+        }
+        return lines(header, tr(language, keys[status], countdown=countdown), version)
+    if status == "GAME_INFO":
+        return lines(header, tr(language, "osc.game_info"), version)
+    if status == "PRESENTS":
+        return lines(header, tr(language, "osc.presents"), version)
     if status == "LOADING":
-        return _fit_lines([header, "游戏加载中", version])
+        return lines(header, tr(language, "osc.loading"), version)
     if status == "SELECTING":
         if bool(event.get("timer_infinite")):
             countdown = "∞"
         else:
             countdown = "{0}s".format(max(0, int(_number(event.get("remaining")))))
-        title = str(event.get("title") or "未知歌曲").strip()
-        difficulty = str(event.get("difficulty") or event.get("chart") or "未知").strip()
-        level = str(event.get("level") or "未知").strip()
-        constant = _constant(event.get("constant")) or "未知"
-        author = str(event.get("author") or "未知").strip()
-        composer = str(event.get("composer") or event.get("artist") or "未知").strip()
-        return _fit_lines(
-            [
-                header,
-                countdown + " 正在选歌：",
-                title + " " + difficulty,
-                "难度：{0}  定数：{1}".format(level, constant),
-                "作者：{0}  曲师：{1}".format(author, composer),
-                version,
-            ]
+        unknown = tr(language, "osc.unknown")
+        title = str(event.get("title") or tr(language, "osc.unknown_song")).strip()
+        difficulty = _localized_chart(
+            event.get("difficulty") or event.get("chart") or unknown, language
+        )
+        level = str(event.get("level") or unknown).strip()
+        constant = _constant(event.get("constant")) or unknown
+        author = str(event.get("author") or unknown).strip()
+        composer = str(event.get("composer") or event.get("artist") or unknown).strip()
+        return lines(
+            header,
+            tr(language, "osc.selecting", countdown=countdown),
+            title + " " + difficulty,
+            tr(language, "osc.level_constant", level=level, constant=constant),
+            tr(language, "osc.author_composer", author=author, composer=composer),
+            version,
         )
 
-    return _fit_lines([header, "主界面挂机中", version])
+    return lines(header, tr(language, "osc.menu"), version)
 
 
-def format_playing(event, show_artist=True, show_judgements=True):
-    header = _identity_header(event) + "\n" + _song_line(event, "maimai DX")
+def format_playing(
+    event,
+    show_artist=True,
+    show_judgements=True,
+    language=DEFAULT_LANGUAGE,
+    show_version=True,
+):
+    header = _identity_header(event, language) + "\n" + _song_line(event, "maimai DX")
     artist = str(event.get("artist") or "").strip()
     if not show_artist:
         artist = ""
-    chart = _chart_line(event)
+    chart = _chart_line(event, language)
     score = "ACH {0}% · DX {1}".format(
         _number(event.get("achievement"), 4)[:12],
         _number(event.get("dx_score"))[:12],
@@ -230,18 +299,28 @@ def format_playing(event, show_artist=True, show_judgements=True):
             _number(event.get("combo"))[:12],
             _number(event.get("miss"))[:12],
         )
-    return _compose_lines(event, header, artist, chart, score, judgements)
+    return _compose_lines(
+        event, header, artist, chart, score, judgements, language, show_version
+    )
 
 
-def format_result(event, show_artist=True, show_judgements=True):
-    header = _identity_header(event) + "\n" + _song_line(event, "maimai DX RESULT")
+def format_result(
+    event,
+    show_artist=True,
+    show_judgements=True,
+    language=DEFAULT_LANGUAGE,
+    show_version=True,
+):
+    header = _identity_header(event, language) + "\n" + _song_line(event, "maimai DX RESULT")
     artist = str(event.get("artist") or "").strip()
     if not show_artist:
         artist = ""
-    chart = _chart_line(event)
-    score = "RESULT {0}% · DX {1}".format(
-        _number(event.get("achievement"), 4)[:12],
-        _number(event.get("dx_score"))[:12],
+    chart = _chart_line(event, language)
+    score = tr(
+        language,
+        "osc.result",
+        achievement=_number(event.get("achievement"), 4)[:12],
+        dx_score=_number(event.get("dx_score"))[:12],
     )
     judgements = ""
     if show_judgements:
@@ -249,7 +328,9 @@ def format_result(event, show_artist=True, show_judgements=True):
             _number(event.get("combo"))[:12],
             _number(event.get("miss"))[:12],
         )
-    return _compose_lines(event, header, artist, chart, score, judgements)
+    return _compose_lines(
+        event, header, artist, chart, score, judgements, language, show_version
+    )
 
 
 class OscChatboxPublisher:

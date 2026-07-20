@@ -10,7 +10,8 @@ sys.path.insert(0, str(ROOT / "app"))
 
 from bridge_installer import ensure_bridge_installed  # noqa: E402
 from config_store import DEFAULT_CONFIG, load_config, normalize_config, save_config  # noqa: E402
-from service import CardState  # noqa: E402
+from osc import format_presence  # noqa: E402
+from service import ActivityGate, CardState  # noqa: E402
 
 
 def test_config():
@@ -28,6 +29,9 @@ def test_config():
         assert loaded == saved
         assert loaded["osc_port"] == 9000
         assert loaded["osc_player"] == 2
+        assert loaded["language"] == "zh-CN"
+        assert loaded["osc_show_version"] is True
+        assert loaded["activity_retry_limit"] == 5
         assert not path.read_bytes().startswith(b"\xef\xbb\xbf")
 
     for invalid in (
@@ -35,6 +39,8 @@ def test_config():
         {"osc_host": "8.8.8.8"},
         {"osc_port": 0},
         {"osc_keepalive_interval": 1},
+        {"activity_retry_limit": 0},
+        {"language": "xx-XX"},
     ):
         value = dict(DEFAULT_CONFIG)
         value.update(invalid)
@@ -49,6 +55,8 @@ def test_config():
 def test_card_state():
     config = normalize_config(DEFAULT_CONFIG)
     cards = CardState(config)
+    assert cards.kind == "STARTING"
+    assert "机台启动中" in cards.text
     menu = cards.handle({
         "event": "presence",
         "status": "MENU",
@@ -82,6 +90,29 @@ def test_card_state():
         "version": "Ver.CN1.56-B",
     }, 1.4)
     assert loading["text"] == "『舞萌DX』 小蓝\n游戏加载中\n版本号 Ver.CN1.56-B"
+    guest_loading = cards.handle({
+        "event": "presence",
+        "status": "LOADING",
+        "user_name": "游客",
+        "version": "Ver.CN1.56-B",
+    }, 1.45)
+    assert "游客" not in guest_loading["text"]
+    map_select = cards.handle({
+        "event": "presence",
+        "status": "MAP_SELECT",
+        "remaining": 30,
+        "user_name": "小蓝",
+        "version": "Ver.CN1.56-B",
+    }, 1.5)
+    assert "30s 正在选择地图区域" in map_select["text"]
+    ticket_select = cards.handle({
+        "event": "presence",
+        "status": "TICKET_SELECT",
+        "remaining": 20,
+        "user_name": "小蓝",
+        "version": "Ver.CN1.56-B",
+    }, 1.6)
+    assert "20s 正在选择倍票" in ticket_select["text"]
     preview = cards.handle({
         "event": "counts",
         "status": "PLAYING",
@@ -149,7 +180,7 @@ def test_card_state():
         "title": "Test Song",
         "achievement": 95.1234,
     }, 4.0)
-    assert "RESULT 95.1234%" in result["text"]
+    assert "结算 95.1234%" in result["text"]
     assert "『舞萌DX』 小蓝" in result["text"]
     assert "版本号 Ver.CN1.56-B" in result["text"]
     assert cards.handle({"event": "presence", "status": "MENU", "version": "x"}, 5.0) is None
@@ -170,6 +201,53 @@ def test_card_state():
     }, 8.1)
     assert "『舞萌DX』 中途启动" in late_playing["text"]
     assert late_playing["text"].endswith("版本号 Ver.CN1.56-B")
+
+
+def test_languages_and_version_toggle():
+    event = {
+        "status": "SELECTING",
+        "remaining": 42,
+        "title": "Test Song",
+        "difficulty": "MASTER",
+        "level": "14",
+        "constant": 14,
+        "author": "Chart Author",
+        "composer": "Composer",
+        "version": "Ver.CN1.56-B",
+    }
+    expected = {
+        "zh-CN": ("正在选歌", "大师", "难度：14", "版本号 Ver.CN1.56-B"),
+        "zh-TW": ("正在選歌", "大師", "難度：14", "版本號 Ver.CN1.56-B"),
+        "ja-JP": ("楽曲選択中", "MASTER", "レベル：14", "バージョン Ver.CN1.56-B"),
+        "en-US": ("Selecting song", "MASTER", "Level: 14", "Version Ver.CN1.56-B"),
+    }
+    for language, fragments in expected.items():
+        text = format_presence(event, language=language, show_version=True)
+        for fragment in fragments:
+            assert fragment in text, (language, text)
+        assert len(text) <= 144
+        without_version = format_presence(event, language=language, show_version=False)
+        assert "Ver.CN1.56-B" not in without_version
+
+    starts = {
+        "zh-CN": "机台启动中",
+        "zh-TW": "機台啟動中",
+        "ja-JP": "筐体を起動中",
+        "en-US": "Arcade cabinet starting",
+    }
+    for language, phrase in starts.items():
+        assert phrase in format_presence({"status": "STARTING"}, language, False)
+
+
+def test_activity_gate():
+    gate = ActivityGate(3)
+    assert gate.failed() is False and gate.failures == 1
+    assert gate.failed() is False and gate.failures == 2
+    assert gate.failed() is True and gate.suspended is True
+    assert gate.failed() is False and gate.failures == 3
+    assert gate.connected() is True
+    assert gate.failures == 0 and gate.suspended is False
+    assert gate.connected() is False
 
 
 def test_bridge_coexistence():
@@ -213,5 +291,7 @@ def test_bridge_coexistence():
 if __name__ == "__main__":
     test_config()
     test_card_state()
+    test_languages_and_version_toggle()
+    test_activity_gate()
     test_bridge_coexistence()
     print("standalone ok: config, state machine, live-play gating, bridge coexistence")

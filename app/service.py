@@ -5,24 +5,67 @@ import threading
 import time
 
 from bridge_installer import ensure_bridge_installed
+from i18n import tr
 from osc import OscChatboxPublisher, format_playing, format_presence, format_result
 from sse_client import SseClient
+
+
+class ActivityGate:
+    """Stops OSC after a bounded number of failed bridge connections."""
+
+    def __init__(self, retry_limit):
+        self.retry_limit = max(1, int(retry_limit))
+        self.failures = 0
+        self.suspended = False
+
+    def connected(self):
+        resumed = self.suspended
+        self.failures = 0
+        self.suspended = False
+        return resumed
+
+    def failed(self):
+        if self.suspended:
+            return False
+        self.failures = min(self.retry_limit, self.failures + 1)
+        if self.failures >= self.retry_limit:
+            self.suspended = True
+            return True
+        return False
 
 
 class CardState:
     def __init__(self, config):
         self.config = config
+        self.language = config["language"]
+        self.show_version = config["osc_show_version"]
         self.version = ""
         self.user_name = ""
-        self.presence_status = "MENU"
+        self.presence_status = "STARTING"
         self.gameplay_active = False
-        self.text = format_presence(self._menu_event())
-        self.kind = "MENU"
+        self.text = self._format_presence(self._presence_event("STARTING"))
+        self.kind = "STARTING"
         self.result_hold_until = 0.0
         self.result_screen_active = False
 
     def _menu_event(self):
         return {"status": "MENU", "version": self.version, "user_name": self.user_name}
+
+    def _presence_event(self, status):
+        return {"status": status, "version": self.version, "user_name": self.user_name}
+
+    def _format_presence(self, event):
+        return format_presence(event, self.language, self.show_version)
+
+    def reset_starting(self):
+        self.user_name = ""
+        self.presence_status = "STARTING"
+        self.gameplay_active = False
+        self.result_screen_active = False
+        self.result_hold_until = 0.0
+        return self._set(
+            self._format_presence(self._presence_event("STARTING")), "STARTING", True
+        )
 
     def _with_identity(self, event):
         current = dict(event)
@@ -42,6 +85,10 @@ class CardState:
             return int(value)
         except (TypeError, ValueError):
             return 1
+
+    @staticmethod
+    def _is_guest_name(value):
+        return not str(value or "").strip() or str(value).strip() == "游客"
 
     @staticmethod
     def _number(value):
@@ -68,7 +115,10 @@ class CardState:
         user_name = str(event.get("user_name") or "").strip()
         if version:
             self.version = version
-        if user_name:
+        status = str(event.get("status") or "").upper()
+        if status in ("LOGIN", "MENU") or (status == "LOADING" and self._is_guest_name(user_name)):
+            self.user_name = ""
+        elif user_name and not self._is_guest_name(user_name):
             self.user_name = user_name
         if name == "state":
             status = str(event.get("status") or "").upper()
@@ -81,7 +131,7 @@ class CardState:
                 if self.result_screen_active or now < self.result_hold_until:
                     return None
                 self.presence_status = "MENU"
-                return self._set(format_presence(self._menu_event()), "MENU")
+                return self._set(self._format_presence(self._menu_event()), "MENU")
             return None
 
         if name == "presence":
@@ -99,9 +149,9 @@ class CardState:
             if status == "MENU" and not was_result_screen and now < self.result_hold_until:
                 return None
             if status == "MENU":
-                return self._set(format_presence(self._menu_event()), "MENU")
+                return self._set(self._format_presence(self._menu_event()), "MENU")
             current = self._with_identity(event)
-            return self._set(format_presence(current), status)
+            return self._set(self._format_presence(current), status)
 
         if name == "settle":
             self.gameplay_active = False
@@ -114,6 +164,8 @@ class CardState:
                     self._with_identity(event),
                     show_artist=self.config["osc_show_artist"],
                     show_judgements=self.config["osc_show_judgements"],
+                    language=self.language,
+                    show_version=self.show_version,
                 ),
                 "RESULT",
                 force=True,
@@ -133,6 +185,8 @@ class CardState:
                     event,
                     show_artist=self.config["osc_show_artist"],
                     show_judgements=self.config["osc_show_judgements"],
+                    language=self.language,
+                    show_version=self.show_version,
                 ),
                 "PLAYING",
             )
@@ -176,12 +230,28 @@ class StandaloneService:
     def _emit(self, **payload):
         self.status_queue.put(payload)
 
+    @staticmethod
+    def _bridge_message_key(result):
+        if result.get("restart_required"):
+            return "status.bridge_restart"
+        state = result.get("state")
+        if state == "ok":
+            return "status.bridge_ready"
+        if state == "pending":
+            return "status.bridge_waiting"
+        if state == "idle":
+            return "status.bridge_disabled"
+        if state == "warn":
+            return "status.warning"
+        return "status.failed"
+
     def _run(self):
         config = self._config
         events = queue.Queue()
         source = SseClient(events)
         osc = OscChatboxPublisher()
         try:
+            language = config["language"]
             osc.configure(
                 True,
                 config["osc_host"],
@@ -190,10 +260,17 @@ class StandaloneService:
                 config["osc_notification"],
             )
             cards = CardState(config)
+            activity = ActivityGate(config["activity_retry_limit"])
+            osc_active = True
             last_sent = 0.0
             next_install = 0.0
             generation = 0
-            self._emit(kind="service", state="starting", detail="正在启动独立 OSC")
+            self._emit(
+                kind="service",
+                state="starting",
+                message_key="status.service_starting",
+                detail=tr(language, "status.service_starting"),
+            )
             source.start(config["endpoint"])
             generation = source.generation
             sent = osc.publish(cards.text, force=True)
@@ -204,7 +281,9 @@ class StandaloneService:
                 state="sending" if sent else "ready",
                 text=cards.text,
                 card_kind=cards.kind,
-                detail="正在持续发送到 {0}:{1}".format(osc.host, osc.port),
+                message_key="status.osc_target",
+                message_values={"host": osc.host, "port": osc.port},
+                detail=tr(language, "status.osc_target", host=osc.host, port=osc.port),
             )
 
             while not self._stop.is_set():
@@ -221,7 +300,8 @@ class StandaloneService:
                         state="sending",
                         text=cards.text,
                         card_kind=cards.kind,
-                        detail="已发送测试卡片",
+                        message_key="status.test_sent",
+                        detail=tr(language, "status.test_sent"),
                     )
 
                 if now >= next_install:
@@ -232,9 +312,16 @@ class StandaloneService:
                             config["auto_detect_game"],
                             config["auto_install_bridge"],
                         )
+                        install["message_key"] = self._bridge_message_key(install)
                         self._emit(kind="bridge", **install)
                     except Exception as exc:
-                        self._emit(kind="bridge", state="fail", detail="桥接检查失败：" + str(exc))
+                        self._emit(
+                            kind="bridge",
+                            state="fail",
+                            message_key="status.check_failed",
+                            detail=tr(language, "status.check_failed"),
+                            diagnostic=str(exc),
+                        )
                     next_install = now + 3.0
 
                 try:
@@ -244,17 +331,85 @@ class StandaloneService:
                 if event_generation != generation or event is None:
                     pass
                 elif "_connected" in event:
-                    self._emit(kind="stream", state="connected", detail=event["_connected"])
+                    resumed = activity.connected()
+                    if resumed:
+                        osc_active = True
+                        if osc.publish(cards.text, force=True):
+                            last_sent = time.monotonic()
+                    self._emit(
+                        kind="stream",
+                        state="connected",
+                        message_key="status.stream_connected",
+                        detail=tr(language, "status.stream_connected"),
+                        endpoint=event["_connected"],
+                    )
                 elif "_error" in event:
-                    self._emit(kind="stream", state="pending", detail=event["_error"])
+                    entered_suspended = activity.failed()
+                    if entered_suspended:
+                        osc.publish("", force=True)
+                        osc.close()
+                        osc_active = False
+                        cards.reset_starting()
+                        self._emit(
+                            kind="stream",
+                            state="disconnected",
+                            message_key="status.osc_paused",
+                            message_values={"limit": activity.retry_limit},
+                            detail=tr(
+                                language,
+                                "status.osc_paused",
+                                limit=activity.retry_limit,
+                            ),
+                            diagnostic=event["_error"],
+                        )
+                        self._emit(
+                            kind="card",
+                            state="stopped",
+                            text=cards.text,
+                            card_kind=cards.kind,
+                            message_key="status.osc_paused",
+                            message_values={"limit": activity.retry_limit},
+                            detail=tr(
+                                language,
+                                "status.osc_paused",
+                                limit=activity.retry_limit,
+                            ),
+                        )
+                    elif not activity.suspended:
+                        self._emit(
+                            kind="stream",
+                            state="pending",
+                            message_key="status.retry",
+                            message_values={
+                                "current": activity.failures,
+                                "limit": activity.retry_limit,
+                            },
+                            detail=tr(
+                                language,
+                                "status.retry",
+                                current=activity.failures,
+                                limit=activity.retry_limit,
+                            ),
+                            diagnostic=event["_error"],
+                        )
                 else:
                     try:
                         publication = cards.handle(event, time.monotonic())
                     except Exception as exc:
-                        self._emit(kind="stream", state="warn", detail="忽略无效事件：" + str(exc))
+                        self._emit(
+                            kind="stream",
+                            state="warn",
+                            message_key="status.invalid_event",
+                            detail=tr(language, "status.invalid_event"),
+                            diagnostic=str(exc),
+                        )
                         publication = None
                     if publication is not None:
-                        sent = osc.publish(publication["text"], force=publication["force"])
+                        sent = False
+                        if osc_active:
+                            sent = osc.publish(
+                                publication["text"], force=publication["force"]
+                            )
                         if sent:
                             last_sent = time.monotonic()
                         self._emit(
@@ -265,7 +420,11 @@ class StandaloneService:
                             detail=publication["kind"],
                         )
 
-                if cards.text and time.monotonic() - last_sent >= config["osc_keepalive_interval"]:
+                if (
+                    osc_active
+                    and cards.text
+                    and time.monotonic() - last_sent >= config["osc_keepalive_interval"]
+                ):
                     if osc.publish(cards.text, force=True):
                         last_sent = time.monotonic()
                         self._emit(
@@ -273,11 +432,17 @@ class StandaloneService:
                             state="sending",
                             text=cards.text,
                             card_kind=cards.kind,
-                            detail="保活重发",
+                            message_key="status.keepalive",
+                            detail=tr(language, "status.keepalive"),
                         )
         except Exception as exc:
             self._emit(kind="service", state="fail", detail=str(exc))
         finally:
             source.stop()
             osc.close()
-            self._emit(kind="service", state="stopped", detail="独立 OSC 已停止")
+            self._emit(
+                kind="service",
+                state="stopped",
+                message_key="status.service_stopped",
+                detail=tr(config.get("language"), "status.service_stopped"),
+            )

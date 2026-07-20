@@ -175,7 +175,7 @@ async def main():
     assert any(b",sTF" in packet and b"ACH 0.0000%" in packet for packet in osc_packets), osc_packets
     assert any(b",sTF" in packet and b"RESULT 95.1234%" in packet for packet in osc_packets), osc_packets
     assert any(
-        "【舞萌DX】".encode("utf-8") in packet
+        "『舞萌DX』".encode("utf-8") in packet
         and "正在选歌".encode("utf-8") in packet
         for packet in osc_packets
     ), osc_packets

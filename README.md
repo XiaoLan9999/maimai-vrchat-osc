@@ -14,7 +14,7 @@ Chatbox sender to disable.
 
 ## Installation
 
-1. Extract `maimai-vrchat-osc-2.0.3-win64.zip`.
+1. Extract `maimai-vrchat-osc-2.1.0-win64.zip`.
 2. Run `MaimaiVrchatOsc.exe`.
 3. Select the game `Package` directory containing `Sinmai.exe`.
 4. Set the IPv4 address of the VRChat computer. Use `127.0.0.1` on the same
@@ -28,9 +28,11 @@ allow inbound UDP 9000 on its Private network profile.
 
 ## Configuration
 
-The native settings window controls the game path, bridge installation,
-VRChat target, player, update and keepalive intervals, Artist/judgement/result
-fields, notification sound, and automatic startup. Configuration is stored at:
+The redesigned light interface controls the game path, bridge installation,
+VRChat target, player, update and keepalive intervals, retry count,
+Artist/judgement/result fields, version visibility, notification sound, and
+automatic startup. Its author link opens
+[XiaoLan9999.net](https://XiaoLan9999.net). Configuration is stored at:
 
 ```text
 %LOCALAPPDATA%\MaimaiVrchatOsc\config.json
@@ -39,11 +41,20 @@ fields, notification sound, and automatic startup. Configuration is stored at:
 Applying settings restarts only the standalone OSC service; DGHub does not
 need to be restarted.
 
+The interface and every generated OSC card support Simplified Chinese,
+Traditional Chinese, Japanese, and English. Difficulty names and status labels
+follow the selected language; song titles, chart authors, and artists retain the
+original metadata supplied by the game package.
+
 ## OSC behavior
 
 Menu:
 
 ```text
+『舞萌DX』
+机台启动中
+版本号 读取中
+
 『舞萌DX』 User Name
 主界面挂机中
 版本号 Ver.CN1.56-B
@@ -81,11 +92,14 @@ combo, and MISS when available. The result card remains active for the full
 result-process lifetime and changes only after entering menu or song select.
 The current card is force-sent every 5 seconds by default to recover from
 temporary UDP loss. After login, the user name remains in the header and the
-game version remains in the footer for every card.
+game version remains in the footer for every card when **Show version** is
+enabled. If the local bridge cannot be reached, the app retries the configured
+number of times, clears the stale Chatbox card, closes its OSC socket, and stops
+all keepalive traffic. It resumes automatically when cabinet activity returns.
 
 ## Bridge coexistence
 
-The application bundles `MaiDGBridge 1.4.4`. Installation verifies SHA-256,
+The application bundles `MaiDGBridge 1.4.6`. Installation verifies SHA-256,
 backs up replaced files under `Package/MaiDGBridge.backups/<timestamp>`, and
 never replaces a DLL while the game is running. A same-version bridge installed
 by DGHub is accepted by version and its recorded hash, preventing replacement
@@ -105,7 +119,7 @@ Outputs:
 
 ```text
 dist\standalone-stage\MaimaiVrchatOsc.exe
-dist\maimai-vrchat-osc-2.0.3-win64.zip
+dist\maimai-vrchat-osc-2.1.0-win64.zip
 ```
 
 The legacy DGHub-only build remains available as `build-dghub-plugin.ps1` and

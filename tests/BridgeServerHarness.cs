@@ -147,6 +147,59 @@ internal static class BridgeServerHarness
         public int Difficulty = 4;
     }
 
+    private class FakeRuntimeSelectProcess
+    {
+        public bool IsLevelTab()
+        {
+            return false;
+        }
+
+        public bool IsExtraFolder(int index)
+        {
+            return false;
+        }
+
+        public int GetDifficultySelectIndex(int player)
+        {
+            return 1;
+        }
+
+        public int GetCurrentDifficulty(int player)
+        {
+            return 2;
+        }
+    }
+
+    private sealed class FakeLevelSelectProcess : FakeRuntimeSelectProcess
+    {
+        public new bool IsLevelTab()
+        {
+            return true;
+        }
+    }
+
+    private sealed class FakeResultScore
+    {
+        public uint CriticalNum = 1;
+        public uint PerfectNum = 2;
+        public uint GreatNum = 3;
+        public uint GoodNum = 4;
+        public uint MissNum = 5;
+        public uint Combo = 2;
+        public uint DxScore = 123;
+
+        public decimal GetAchivement()
+        {
+            return 87.6543m;
+        }
+    }
+
+    private sealed class FakeResultProcess
+    {
+        private readonly FakeResultScore[] _gameScoreLists = { new FakeResultScore(), null };
+        private readonly int _musicID = 24680;
+    }
+
     public static int Main()
     {
         System.Reflection.MethodInfo readVersion = typeof(MaiDGBridge.BridgeMod).GetMethod(
@@ -168,6 +221,30 @@ internal static class BridgeServerHarness
         if (selectedDifficulty != 4 || fallbackDifficulty != 3)
         {
             throw new Exception("selected difficulty resolution failed");
+        }
+        int runtimeDifficulty = (int)readDifficulty.Invoke(
+            null, new object[] { new FakeRuntimeSelectProcess(), new FakeSelectedMusic() });
+        if (runtimeDifficulty != 2)
+        {
+            throw new Exception("runtime difficulty resolution failed");
+        }
+        int levelDifficulty = (int)readDifficulty.Invoke(
+            null, new object[] { new FakeLevelSelectProcess(), new FakeSelectedMusic() });
+        if (levelDifficulty != 1)
+        {
+            throw new Exception("level difficulty resolution failed");
+        }
+
+        System.Reflection.MethodInfo captureResult = typeof(MaiDGBridge.BridgeMod).GetMethod(
+            "CaptureResult",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        MaiDGBridge.Snapshot result = (MaiDGBridge.Snapshot)captureResult.Invoke(
+            new MaiDGBridge.BridgeMod(), new object[] { new FakeResultProcess(), 0 });
+        if (result == null || result.MusicId != 24680 || result.Critical != 1 ||
+            result.Perfect != 2 || result.Great != 3 || result.Good != 4 || result.Miss != 5 ||
+            result.Achievement != 87.6543m || !result.ToJson("settle", "RESULT").Contains("\"event\":\"settle\""))
+        {
+            throw new Exception("result snapshot capture failed");
         }
 
         System.Reflection.FieldInfo sessionStarted = typeof(MaiDGBridge.BridgeMod).GetField(

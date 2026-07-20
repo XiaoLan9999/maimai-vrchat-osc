@@ -12,7 +12,7 @@ using HarmonyLib;
 using Manager;
 using MelonLoader;
 
-[assembly: MelonInfo(typeof(MaiDGBridge.BridgeMod), "MaiDGBridge", "1.4.4", "XiaoLan9999", "")]
+[assembly: MelonInfo(typeof(MaiDGBridge.BridgeMod), "MaiDGBridge", "1.4.6", "XiaoLan9999", "")]
 [assembly: MelonGame("sega-interactive", "Sinmai")]
 
 namespace MaiDGBridge
@@ -21,10 +21,16 @@ namespace MaiDGBridge
     {
         private readonly Snapshot[] _last = new Snapshot[2];
         private readonly Snapshot[] _hookCounts = new Snapshot[2];
+        private readonly Snapshot[] _lastResult = new Snapshot[2];
         private readonly Stopwatch _clock = Stopwatch.StartNew();
         private static BridgeMod _active;
         private static object _entryProcess;
         private static object _modeSelectProcess;
+        private static object _mapSelectProcess;
+        private static object _ticketSelectProcess;
+        private static object _characterSelectProcess;
+        private static object _transitionProcess;
+        private static string _transitionStatus;
         private static object _musicSelectProcess;
         private static object _resultProcess;
         private static bool _sessionStarted;
@@ -38,6 +44,7 @@ namespace MaiDGBridge
         private long _lastPeriodicPublish;
         private long _lastPresencePublish;
         private long _lastErrorLog;
+        private long _resultHoldUntil;
         private int _publishIntervalMs = 250;
         private int _presenceIntervalMs = 1000;
 
@@ -61,6 +68,7 @@ namespace MaiDGBridge
                 PatchJudgeResults();
                 PatchEntryProcess();
                 PatchModeSelectProcess();
+                PatchAuxiliaryPresenceProcesses();
                 PatchMusicSelect();
                 PatchResultProcess();
                 MelonLogger.Msg("MaiDGBridge listening on http://127.0.0.1:" + config.Port + "/events");
@@ -84,6 +92,11 @@ namespace MaiDGBridge
                 bool inGame = GameManager.IsInGame;
                 long now = _clock.ElapsedMilliseconds;
 
+                if (_resultProcess != null)
+                {
+                    CaptureResultEvents(now);
+                }
+
                 if (inGame)
                 {
                     if (!_wasInGame)
@@ -92,6 +105,9 @@ namespace MaiDGBridge
                         _last[1] = null;
                         _hookCounts[0] = null;
                         _hookCounts[1] = null;
+                        _lastResult[0] = null;
+                        _lastResult[1] = null;
+                        _resultHoldUntil = 0;
                         _lastPresence = null;
                         _server.PublishJson("{\"event\":\"state\",\"status\":\"PLAYING\"}");
                     }
@@ -120,9 +136,11 @@ namespace MaiDGBridge
                     for (int player = 0; player < 2; player++)
                     {
                         Snapshot result = _last[player];
-                        if (result != null && result.TotalJudgements > 0)
+                        if (result != null)
                         {
                             _server.PublishJson(result.ToJson("settle", "RESULT"));
+                            _lastResult[player] = result;
+                            _resultHoldUntil = now + 10000;
                         }
                         _last[player] = null;
                     }
@@ -176,6 +194,11 @@ namespace MaiDGBridge
             _musicSelectProcess = null;
             _entryProcess = null;
             _modeSelectProcess = null;
+            _mapSelectProcess = null;
+            _ticketSelectProcess = null;
+            _characterSelectProcess = null;
+            _transitionProcess = null;
+            _transitionStatus = null;
             _resultProcess = null;
             _sessionStarted = false;
             SseServer server = _server;
@@ -276,7 +299,7 @@ namespace MaiDGBridge
         private static void ModeSelectStartPostfix(object __instance)
         {
             _modeSelectProcess = __instance;
-            _sessionStarted = true;
+            _sessionStarted = _sessionStarted || HasEnteredUser();
         }
 
         private static void ModeSelectReleasePostfix(object __instance)
@@ -284,6 +307,121 @@ namespace MaiDGBridge
             if (ReferenceEquals(_modeSelectProcess, __instance))
             {
                 _modeSelectProcess = null;
+            }
+        }
+
+        private void PatchAuxiliaryPresenceProcesses()
+        {
+            PatchAuxiliaryPresenceProcess("Process.RegionalSelectProcess");
+            PatchAuxiliaryPresenceProcess("Process.TicketSelect.TicketSelectProcess");
+            PatchAuxiliaryPresenceProcess("Process.CharacterSelectProces");
+            PatchAuxiliaryPresenceProcess("Process.GetPresentProcess");
+            PatchAuxiliaryPresenceProcess("Process.PlInformationProcess");
+            PatchAuxiliaryPresenceProcess("Process.InformationProcess");
+            PatchAuxiliaryPresenceProcess("Process.GetMusicProcess");
+            PatchAuxiliaryPresenceProcess("Process.MusicSelectInfoProcess");
+        }
+
+        private static void PatchAuxiliaryPresenceProcess(string typeName)
+        {
+            System.Type type = AccessTools.TypeByName(typeName);
+            if (type == null)
+            {
+                return;
+            }
+
+            MethodInfo onStart = AccessTools.Method(type, "OnStart");
+            MethodInfo onRelease = AccessTools.Method(type, "OnRelease");
+            MethodInfo startPostfix = AccessTools.Method(typeof(BridgeMod), "AuxiliaryStartPostfix");
+            MethodInfo releasePostfix = AccessTools.Method(typeof(BridgeMod), "AuxiliaryReleasePostfix");
+            if (onStart == null || onRelease == null || startPostfix == null || releasePostfix == null)
+            {
+                MelonLogger.Warning("MaiDGBridge auxiliary process hooks were not found: " + typeName);
+                return;
+            }
+
+            HarmonyLib.Harmony harmony = new HarmonyLib.Harmony("MaiDGBridge.Auxiliary." + typeName);
+            harmony.Patch(onStart, null, new HarmonyMethod(startPostfix));
+            harmony.Patch(onRelease, null, new HarmonyMethod(releasePostfix));
+            MelonLogger.Msg("MaiDGBridge auxiliary process hook installed: " + typeName);
+        }
+
+        private static void AuxiliaryStartPostfix(object __instance)
+        {
+            BridgeMod active = _active;
+            if (active != null)
+            {
+                active.SetAuxiliaryProcess(__instance, true);
+            }
+        }
+
+        private static void AuxiliaryReleasePostfix(object __instance)
+        {
+            BridgeMod active = _active;
+            if (active != null)
+            {
+                active.SetAuxiliaryProcess(__instance, false);
+            }
+        }
+
+        private void SetAuxiliaryProcess(object process, bool active)
+        {
+            if (process == null)
+            {
+                return;
+            }
+
+            string typeName = process.GetType().FullName ?? string.Empty;
+            if (typeName == "Process.RegionalSelectProcess")
+            {
+                _mapSelectProcess = active ? process :
+                    (ReferenceEquals(_mapSelectProcess, process) ? null : _mapSelectProcess);
+                return;
+            }
+            if (typeName == "Process.TicketSelect.TicketSelectProcess")
+            {
+                _ticketSelectProcess = active ? process :
+                    (ReferenceEquals(_ticketSelectProcess, process) ? null : _ticketSelectProcess);
+                return;
+            }
+            if (typeName == "Process.CharacterSelectProces")
+            {
+                _characterSelectProcess = active ? process :
+                    (ReferenceEquals(_characterSelectProcess, process) ? null : _characterSelectProcess);
+                return;
+            }
+
+            string status = AuxiliaryStatus(typeName);
+            if (string.IsNullOrEmpty(status))
+            {
+                return;
+            }
+            if (active)
+            {
+                _transitionProcess = process;
+                _transitionStatus = status;
+            }
+            else if (ReferenceEquals(_transitionProcess, process))
+            {
+                _transitionProcess = null;
+                _transitionStatus = null;
+            }
+        }
+
+        private static string AuxiliaryStatus(string typeName)
+        {
+            switch (typeName)
+            {
+                case "Process.GetPresentProcess":
+                    return "PRESENTS";
+                case "Process.PlInformationProcess":
+                case "Process.InformationProcess":
+                    return "GAME_INFO";
+                case "Process.GetMusicProcess":
+                case "Process.MusicSelectInfoProcess":
+                    return "LOADING";
+                default:
+                    return string.Empty;
             }
         }
 
@@ -315,7 +453,7 @@ namespace MaiDGBridge
         private static void MusicSelectStartPostfix(object __instance)
         {
             _musicSelectProcess = __instance;
-            _sessionStarted = true;
+            _sessionStarted = _sessionStarted || HasEnteredUser();
         }
 
         private static void MusicSelectReleasePostfix(object __instance)
@@ -354,7 +492,14 @@ namespace MaiDGBridge
         private static void ResultStartPostfix(object __instance)
         {
             _resultProcess = __instance;
-            _sessionStarted = true;
+            _sessionStarted = _sessionStarted || HasEnteredUser();
+            BridgeMod active = _active;
+            if (active != null)
+            {
+                active._lastResult[0] = null;
+                active._lastResult[1] = null;
+                active._resultHoldUntil = 0;
+            }
         }
 
         private static void ResultReleasePostfix(object __instance)
@@ -362,6 +507,184 @@ namespace MaiDGBridge
             if (ReferenceEquals(_resultProcess, __instance))
             {
                 _resultProcess = null;
+                BridgeMod active = _active;
+                if (active != null && (active._lastResult[0] != null || active._lastResult[1] != null))
+                {
+                    active._resultHoldUntil = active._clock.ElapsedMilliseconds + 10000;
+                }
+            }
+        }
+
+        private void CaptureResultEvents(long now)
+        {
+            if (_resultProcess == null)
+            {
+                return;
+            }
+
+            for (int player = 0; player < 2; player++)
+            {
+                Snapshot result = CaptureResult(_resultProcess, player);
+                if (result == null)
+                {
+                    continue;
+                }
+
+                bool changed = _lastResult[player] == null || !_lastResult[player].SameValues(result);
+                if (changed)
+                {
+                    _server.PublishJson(result.ToJson("settle", "RESULT"));
+                    _lastResult[player] = result;
+                    _resultHoldUntil = now + 10000;
+                }
+            }
+        }
+
+        private Snapshot CaptureResult(object resultProcess, int player)
+        {
+            try
+            {
+                object scoreLists = ReadFirstMember(
+                    resultProcess, "_gameScoreLists", "gameScoreLists", "GameScoreLists");
+                object score = ReadIndex(scoreLists, player);
+                object userScore = ReadIndex(
+                    ReadFirstMember(resultProcess, "_userScores", "userScores"), player);
+                if (score == null)
+                {
+                    score = userScore;
+                }
+                if (score == null)
+                {
+                    score = GamePlayManager.Instance.GetGameScore(player, -1);
+                }
+                if (score == null)
+                {
+                    return null;
+                }
+
+                int musicId = ToInt(ReadFirstMember(resultProcess, "_musicID", "musicID", "MusicID", "musicId"));
+                int difficulty = ReadResultDifficulty(player);
+                Snapshot previous = _last[player];
+                if (musicId <= 0 && previous != null)
+                {
+                    musicId = previous.MusicId;
+                }
+                if (difficulty < 0 && previous != null)
+                {
+                    difficulty = previous.Difficulty;
+                }
+
+                uint track = previous == null ? GameManager.MusicTrackNumber : previous.Track;
+                object dxScoreValue = ReadFirstMember(score, "DxScore", "dxScore");
+                if (dxScoreValue == null)
+                {
+                    dxScoreValue = ReadFirstMember(userScore, "deluxscore", "DxScore", "dxScore");
+                }
+                Snapshot snapshot = new Snapshot
+                {
+                    Player = player + 1,
+                    Track = track,
+                    Critical = ToUInt(ReadFirstMember(score, "CriticalNum", "criticalNum")),
+                    Perfect = ToUInt(ReadFirstMember(score, "PerfectNum", "perfectNum")),
+                    Great = ToUInt(ReadFirstMember(score, "GreatNum", "greatNum")),
+                    Good = ToUInt(ReadFirstMember(score, "GoodNum", "goodNum")),
+                    Miss = ToUInt(ReadFirstMember(score, "MissNum", "missNum")),
+                    Combo = ToUInt(ReadFirstMember(score, "Combo", "combo")),
+                    DxScore = ToUInt(dxScoreValue),
+                    Achievement = ToDecimal(
+                        ReadFirstMember(userScore, "achivement", "achievement")),
+                    MusicId = musicId,
+                    Difficulty = difficulty
+                };
+                if (userScore == null || ReadFirstMember(userScore, "achivement", "achievement") == null)
+                {
+                    snapshot.Achievement = ToDecimal(
+                        InvokeNoArg(score, "GetAchivement") ?? InvokeNoArg(score, "GetAchievement"));
+                }
+                ApplyResultMetadata(snapshot, musicId, difficulty);
+                if (previous != null)
+                {
+                    if (snapshot.MusicId <= 0 || string.IsNullOrEmpty(snapshot.Title))
+                    {
+                        CopyMetadata(previous, snapshot);
+                    }
+                    if (snapshot.Track == 0)
+                    {
+                        snapshot.Track = previous.Track;
+                    }
+                }
+                ApplyIdentity(snapshot);
+                return snapshot;
+            }
+            catch (Exception ex)
+            {
+                if (!_metadataWarningLogged)
+                {
+                    _metadataWarningLogged = true;
+                    MelonLogger.Warning("MaiDGBridge result capture unavailable: " + ex.Message);
+                }
+                return null;
+            }
+        }
+
+        private static int ReadResultDifficulty(int player)
+        {
+            object values = ReadStaticMember(typeof(GameManager), "SelectDifficultyID");
+            object value = ReadIndex(values, player);
+            if (value == null)
+            {
+                value = ReadStaticMember(typeof(GameManager), "CurrentDifficulty");
+                value = ReadIndex(value, player);
+            }
+            int difficulty = ToInt(value);
+            return value != null && difficulty >= 0 && difficulty < 6 ? difficulty : -1;
+        }
+
+        private void ApplyResultMetadata(Snapshot snapshot, int musicId, int difficulty)
+        {
+            if (musicId <= 0 || difficulty < 0)
+            {
+                return;
+            }
+
+            System.Type dataManagerType = AccessTools.TypeByName("Manager.DataManager");
+            object dataManager = ReadStaticMember(dataManagerType, "Instance");
+            if (dataManager == null)
+            {
+                return;
+            }
+            MethodInfo getMusic = FindMethod(dataManager.GetType(), "GetMusic", false, typeof(int));
+            object music = getMusic == null ? null : getMusic.Invoke(dataManager, new object[] { musicId });
+            if (music == null)
+            {
+                return;
+            }
+
+            snapshot.MusicId = musicId;
+            snapshot.Difficulty = difficulty;
+            snapshot.Chart = DifficultyName(difficulty);
+            snapshot.Title = ReadStringId(music, "name");
+            snapshot.Composer = ReadStringId(music, "artistName");
+            snapshot.Artist = snapshot.Composer;
+
+            object notes = ReadIndex(
+                ReadFirstMember(music, "notesData", "NotesData", "ScoreData", "scoreData"), difficulty);
+            if (notes == null)
+            {
+                return;
+            }
+            int musicLevelId = ToInt(ReadMember(notes, "musicLevelID"));
+            MethodInfo getMusicLevel = FindMethod(dataManager.GetType(), "GetMusicLevel", false, typeof(int));
+            object musicLevel = getMusicLevel == null
+                ? null
+                : getMusicLevel.Invoke(dataManager, new object[] { musicLevelId });
+            snapshot.Constant = ToDecimal(ReadMember(notes, "level")) +
+                                ToDecimal(ReadMember(notes, "levelDecimal")) / 10m;
+            snapshot.Author = ReadStringId(notes, "notesDesigner");
+            snapshot.Level = ToText(ReadMember(musicLevel, "levelNum"));
+            if (string.IsNullOrEmpty(snapshot.Level) && snapshot.Constant > 0m)
+            {
+                snapshot.Level = snapshot.Constant.ToString("0.#", CultureInfo.InvariantCulture);
             }
         }
 
@@ -377,7 +700,7 @@ namespace MaiDGBridge
             if (_sessionStarted)
             {
                 string userName = ReadUserName();
-                if (!string.IsNullOrEmpty(userName))
+                if (!IsGuestName(userName))
                 {
                     _cachedUserName = userName;
                 }
@@ -397,7 +720,40 @@ namespace MaiDGBridge
                 presence.TimerInfinite = ReadProcessTimerInfinite(_modeSelectProcess);
                 return presence;
             }
+            if (_mapSelectProcess != null)
+            {
+                presence.Status = "MAP_SELECT";
+                presence.Remaining = ReadProcessRemaining(_mapSelectProcess);
+                presence.TimerInfinite = ReadProcessTimerInfinite(_mapSelectProcess);
+                return presence;
+            }
+            if (_ticketSelectProcess != null)
+            {
+                presence.Status = "TICKET_SELECT";
+                presence.Remaining = ReadProcessRemaining(_ticketSelectProcess);
+                presence.TimerInfinite = ReadProcessTimerInfinite(_ticketSelectProcess);
+                return presence;
+            }
+            if (_characterSelectProcess != null)
+            {
+                presence.Status = "CHARACTER_SELECT";
+                presence.Remaining = ReadProcessRemaining(_characterSelectProcess);
+                presence.TimerInfinite = ReadProcessTimerInfinite(_characterSelectProcess);
+                return presence;
+            }
+            if (_transitionProcess != null)
+            {
+                presence.Status = string.IsNullOrEmpty(_transitionStatus) ? "LOADING" : _transitionStatus;
+                presence.Remaining = ReadProcessRemaining(_transitionProcess);
+                presence.TimerInfinite = ReadProcessTimerInfinite(_transitionProcess);
+                return presence;
+            }
             if (_resultProcess != null)
+            {
+                presence.Status = "RESULT_SCREEN";
+                return presence;
+            }
+            if (_resultHoldUntil > _clock.ElapsedMilliseconds)
             {
                 presence.Status = "RESULT_SCREEN";
                 return presence;
@@ -411,14 +767,22 @@ namespace MaiDGBridge
 
             presence.Status = "SELECTING";
             object selected = InvokeMethod(process, "GetMusic", 0);
+            object currentSelection = ReadFirstMember(
+                process, "CurrentMusicSelect", "_currentMusicSelect", "CurrentMusic", "_currentMusic");
             if (selected == null)
             {
-                selected = ReadMember(process, "CurrentMusicSelect");
+                selected = currentSelection;
             }
-            object musicSelectData = ReadMember(selected, "musicSelectData");
+            object musicSelectData = ReadFirstMember(
+                selected, "musicSelectData", "MusicSelectData", "data", "Data");
             if (musicSelectData == null)
             {
-                musicSelectData = selected;
+                musicSelectData = ReadFirstMember(
+                    currentSelection, "musicSelectData", "MusicSelectData", "data", "Data");
+            }
+            if (musicSelectData == null)
+            {
+                musicSelectData = selected ?? currentSelection;
             }
             presence.DifficultyId = ReadSelectedDifficulty(process, musicSelectData);
             presence.Difficulty = DifficultyName(presence.DifficultyId);
@@ -432,10 +796,10 @@ namespace MaiDGBridge
             presence.Composer = ReadStringId(music, "artistName");
             presence.Artist = presence.Composer;
 
-            object notes = ReadIndex(ReadMember(musicSelectData, "ScoreData"), presence.DifficultyId);
+            object notes = ReadIndex(ReadFirstMember(musicSelectData, "ScoreData", "scoreData"), presence.DifficultyId);
             if (notes == null)
             {
-                notes = ReadIndex(ReadMember(music, "notesData"), presence.DifficultyId);
+                notes = ReadIndex(ReadFirstMember(music, "notesData", "NotesData", "ScoreData"), presence.DifficultyId);
             }
             if (notes != null)
             {
@@ -469,14 +833,51 @@ namespace MaiDGBridge
 
         private static int ReadSelectedDifficulty(object process, object selected)
         {
-            object selectedValue = ReadMember(selected, "Difficulty");
+            bool levelTab = ToBool(InvokeNoArg(process, "IsLevelTab"));
+            bool extraFolder = ToBool(InvokeMethod(process, "IsExtraFolder", 0));
+            if (!levelTab && !extraFolder)
+            {
+                object currentMethod = InvokeMethod(process, "GetCurrentDifficulty", 0);
+                int currentMethodValue = ToInt(currentMethod);
+                if (currentMethod != null && currentMethodValue >= 0 && currentMethodValue < 6)
+                {
+                    return currentMethodValue;
+                }
+            }
+
+            object selectedIndex = InvokeMethod(process, "GetDifficultySelectIndex", 0);
+            int selectedIndexValue = ToInt(selectedIndex);
+            if (selectedIndex != null && selectedIndexValue >= 0 && selectedIndexValue < 6)
+            {
+                return selectedIndexValue;
+            }
+
+            object selectedValue = ReadFirstMember(
+                selected, "Difficulty", "difficulty", "DifficultyId", "difficultyId", "SelectDifficultyID");
             int selectedDifficulty = ToInt(selectedValue);
             if (selectedValue != null && selectedDifficulty >= 0 && selectedDifficulty < 6)
             {
                 return selectedDifficulty;
             }
-            object current = ReadIndex(ReadMember(process, "CurrentDifficulty"), 0);
-            return current == null ? -1 : ToInt(current);
+
+            object currentMethodFallback = InvokeMethod(process, "GetCurrentDifficulty", 0);
+            int currentMethodFallbackValue = ToInt(currentMethodFallback);
+            if (currentMethodFallback != null && currentMethodFallbackValue >= 0 && currentMethodFallbackValue < 6)
+            {
+                return currentMethodFallbackValue;
+            }
+
+            object current = ReadFirstMember(
+                process, "CurrentDifficulty", "_currentDifficulty", "SelectDifficultyID", "_selectDifficultyID");
+            object currentValue = ReadIndex(current, 0);
+            if (currentValue == null)
+            {
+                currentValue = current;
+            }
+            int currentDifficulty = ToInt(currentValue);
+            return currentValue != null && currentDifficulty >= 0 && currentDifficulty < 6
+                ? currentDifficulty
+                : -1;
         }
 
         private static int ReadProcessRemaining(object process)
@@ -700,8 +1101,7 @@ namespace MaiDGBridge
                 for (int index = 0; index < 2; index++)
                 {
                     object user = InvokeMethod(userManager, "GetUserData", index);
-                    if (ToBool(ReadMember(user, "IsEntry")) ||
-                        ToBool(ReadMember(user, "IsActiveUser")))
+                    if (ToBool(ReadMember(user, "IsEntry")))
                     {
                         return true;
                     }
@@ -727,6 +1127,11 @@ namespace MaiDGBridge
                 name = ToText(ReadFirstMember(user, "userName", "UserName"));
             }
             return name;
+        }
+
+        private static bool IsGuestName(string name)
+        {
+            return string.IsNullOrEmpty(name) || string.Equals(name, "游客", StringComparison.Ordinal);
         }
 
         private static string ReadVersion()
@@ -884,9 +1289,10 @@ namespace MaiDGBridge
             {
                 _cachedVersion = ReadVersion();
             }
-            if (string.IsNullOrEmpty(_cachedUserName))
+            if (IsGuestName(_cachedUserName))
             {
-                _cachedUserName = ReadUserName();
+                string userName = ReadUserName();
+                _cachedUserName = IsGuestName(userName) ? string.Empty : userName;
             }
             snapshot.Version = _cachedVersion;
             snapshot.UserName = _cachedUserName;
@@ -1114,6 +1520,18 @@ namespace MaiDGBridge
             catch
             {
                 return 0;
+            }
+        }
+
+        private static uint ToUInt(object value)
+        {
+            try
+            {
+                return value == null ? 0u : Convert.ToUInt32(value, CultureInfo.InvariantCulture);
+            }
+            catch
+            {
+                return 0u;
             }
         }
 
