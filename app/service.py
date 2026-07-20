@@ -12,10 +12,16 @@ from sse_client import SseClient
 class CardState:
     def __init__(self, config):
         self.config = config
-        self.text = format_presence({"status": "MENU"})
+        self.version = ""
+        self.presence_status = "MENU"
+        self.gameplay_active = False
+        self.text = format_presence(self._menu_event())
         self.kind = "MENU"
         self.result_hold_until = 0.0
         self.result_screen_active = False
+
+    def _menu_event(self):
+        return {"status": "MENU", "version": self.version}
 
     def _set(self, text, kind, force=False):
         changed = text != self.text or kind != self.kind
@@ -30,21 +36,64 @@ class CardState:
         except (TypeError, ValueError):
             return 1
 
+    @staticmethod
+    def _number(value):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _looks_like_live_play(self, event):
+        if event.get("in_game") is True:
+            return True
+        progress = self._number(event.get("progress"))
+        return (
+            0.0 < progress < 0.999
+            or self._number(event.get("achievement")) > 0
+            or self._number(event.get("dx_score")) > 0
+            or self._number(event.get("miss")) > 0
+        )
+
     def handle(self, event, now=None):
         now = time.monotonic() if now is None else now
         name = event.get("event")
+        if name == "state":
+            status = str(event.get("status") or "").upper()
+            if status == "PLAYING":
+                self.gameplay_active = True
+                self.presence_status = "PLAYING"
+                self.result_screen_active = False
+            elif status == "IDLE":
+                self.gameplay_active = False
+                if self.result_screen_active or now < self.result_hold_until:
+                    return None
+                self.presence_status = "MENU"
+                return self._set(format_presence(self._menu_event()), "MENU")
+            return None
+
         if name == "presence":
             status = str(event.get("status") or "MENU").upper()
+            version = str(event.get("version") or "").strip()
+            if version:
+                self.version = version
             if status == "RESULT_SCREEN":
+                self.gameplay_active = False
                 self.result_screen_active = True
                 return None
             was_result_screen = self.result_screen_active
             self.result_screen_active = False
+            self.gameplay_active = False
+            self.presence_status = status
             if status == "MENU" and not was_result_screen and now < self.result_hold_until:
                 return None
-            return self._set(format_presence(event), status)
+            if status == "MENU":
+                return self._set(format_presence(self._menu_event()), "MENU")
+            current = dict(event)
+            current["version"] = self.version
+            return self._set(format_presence(current), status)
 
         if name == "settle":
+            self.gameplay_active = False
             self.result_screen_active = False
             self.result_hold_until = now + 8.0
             if not self.config["osc_show_result"]:
@@ -62,6 +111,10 @@ class CardState:
         if name == "counts" and event.get("status") == "PLAYING":
             if self._player(event.get("player", 1)) != self.config["osc_player"]:
                 return None
+            if not self.gameplay_active and not self._looks_like_live_play(event):
+                return None
+            self.gameplay_active = True
+            self.presence_status = "PLAYING"
             self.result_screen_active = False
             return self._set(
                 format_playing(

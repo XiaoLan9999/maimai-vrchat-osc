@@ -136,12 +136,12 @@ def format_presence(event):
         ).strip()
         song = " ".join(part for part in (title, difficulty) if part)
         return sanitize_chatbox_text(
-            "【舞萌DX】\n{0} 正在选歌：\n{1}".format(countdown, song)
+            "『舞萌DX』\n{0} 正在选歌：\n{1}".format(countdown, song)
         )
 
     version = str(event.get("version") or "读取中").strip()
     return sanitize_chatbox_text(
-        "【舞萌DX】\n在主界面中\n版本号 {0}".format(version)
+        "『舞萌DX』\n主界面挂机中\n版本号 {0}".format(version)
     )
 
 

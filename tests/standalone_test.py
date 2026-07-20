@@ -49,8 +49,21 @@ def test_config():
 def test_card_state():
     config = normalize_config(DEFAULT_CONFIG)
     cards = CardState(config)
-    menu = cards.handle({"event": "presence", "status": "MENU", "version": "Ver.CN1.55-8"}, 1.0)
-    assert "Ver.CN1.55-8" in menu["text"]
+    menu = cards.handle({"event": "presence", "status": "MENU", "version": "Ver.CN1.56-B"}, 1.0)
+    assert "Ver.CN1.56-B" in menu["text"]
+    assert "主界面挂机中" in menu["text"]
+    preview = cards.handle({
+        "event": "counts",
+        "status": "PLAYING",
+        "player": 1,
+        "title": "Preview Song",
+        "chart": "BASIC",
+        "progress": 1.0,
+        "achievement": 0,
+        "dx_score": 0,
+        "miss": 0,
+    }, 1.5)
+    assert preview is None
     selecting = cards.handle({
         "event": "presence",
         "status": "SELECTING",
@@ -60,6 +73,7 @@ def test_card_state():
     }, 2.0)
     assert "42s 正在选歌" in selecting["text"]
     assert cards.handle({"event": "counts", "status": "PLAYING", "player": 2}, 3.0) is None
+    cards.handle({"event": "state", "status": "PLAYING"}, 3.0)
     playing = cards.handle({
         "event": "counts",
         "status": "PLAYING",
@@ -67,7 +81,7 @@ def test_card_state():
         "title": "Test Song",
         "achievement": 97.5,
         "miss": 1,
-    }, 3.0)
+    }, 3.1)
     assert "ACH 97.5000%" in playing["text"]
     result = cards.handle({
         "event": "settle",
@@ -102,14 +116,14 @@ def test_bridge_coexistence():
         (package / "MaiDGBridge.ini").write_text("Enabled=true\n", encoding="utf-8")
         (package / "MaiDGBridge.dghub.json").write_text(json.dumps({
             "plugin": "maimai_link",
-            "bridge_version": "1.4.1",
+            "bridge_version": "1.4.2",
             "dll_sha256": installed_hash,
         }), encoding="utf-8")
         (payload / "MaiDGBridge.dll").write_bytes(bundled)
         (payload / "MaiDGBridge.ini").write_text("Enabled=true\n", encoding="utf-8")
         (payload / "bridge.json").write_text(json.dumps({
-            "plugin_version": "2.0.0",
-            "bridge_version": "1.4.1",
+            "plugin_version": "2.0.1",
+            "bridge_version": "1.4.2",
             "sha256": bundled_hash,
         }), encoding="utf-8")
 
@@ -125,4 +139,4 @@ if __name__ == "__main__":
     test_config()
     test_card_state()
     test_bridge_coexistence()
-    print("standalone ok: config, state machine, bridge coexistence")
+    print("standalone ok: config, state machine, live-play gating, bridge coexistence")

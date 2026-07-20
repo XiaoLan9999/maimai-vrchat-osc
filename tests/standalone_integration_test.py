@@ -47,11 +47,12 @@ async def main():
             await writer.drain()
             await asyncio.sleep(0.15)
 
-        await event({"event": "presence", "status": "MENU", "version": "Ver.CN1.55-8"})
+        await event({"event": "presence", "status": "MENU", "version": "Ver.CN1.56-B"})
         await event({
             "event": "presence", "status": "SELECTING", "remaining": 42,
             "title": "Test Song", "difficulty": "MASTER",
         })
+        await event({"event": "state", "status": "PLAYING"})
         await event({
             "event": "counts", "status": "PLAYING", "player": 1,
             "title": "Test Song", "achievement": 97.5, "miss": 1,
@@ -60,7 +61,7 @@ async def main():
             "event": "settle", "status": "RESULT", "player": 1,
             "title": "Test Song", "achievement": 95.1234, "miss": 1,
         })
-        await event({"event": "presence", "status": "RESULT_SCREEN", "version": "Ver.CN1.55-8"})
+        await event({"event": "presence", "status": "RESULT_SCREEN", "version": "Ver.CN1.56-B"})
         source_done.set()
         await asyncio.sleep(4)
         writer.close()
@@ -108,7 +109,7 @@ async def main():
         except queue.Empty:
             break
     assert any(item.get("kind") == "stream" and item.get("state") == "connected" for item in statuses)
-    assert any("版本号 Ver.CN1.55-8" in text for text in packets), packets
+    assert any("版本号 Ver.CN1.56-B" in text for text in packets), packets
     assert any("42s 正在选歌" in text for text in packets), packets
     assert any("ACH 97.5000%" in text for text in packets), packets
     results = [text for text in packets if "RESULT 95.1234%" in text]

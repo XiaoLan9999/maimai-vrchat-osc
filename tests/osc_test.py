@@ -80,21 +80,21 @@ def test_text_limits_and_format():
 
 def test_presence_format():
     menu = format_presence({"status": "MENU", "version": "1.55.00"})
-    assert menu == "【舞萌DX】\n在主界面中\n版本号 1.55.00"
+    assert menu == "『舞萌DX』\n主界面挂机中\n版本号 1.55.00"
     selecting = format_presence({
         "status": "SELECTING",
         "remaining": 42,
         "title": "ぱぴぷぺぽ",
         "difficulty": "MASTER",
     })
-    assert selecting == "【舞萌DX】\n42s 正在选歌：\nぱぴぷぺぽ MASTER"
+    assert selecting == "『舞萌DX』\n42s 正在选歌：\nぱぴぷぺぽ MASTER"
     infinite = format_presence({
         "status": "SELECTING",
         "timer_infinite": True,
         "title": "Song",
         "difficulty": "EXPERT",
     })
-    assert infinite.startswith("【舞萌DX】\n∞ 正在选歌：")
+    assert infinite.startswith("『舞萌DX』\n∞ 正在选歌：")
 
 
 def test_target_validation():
