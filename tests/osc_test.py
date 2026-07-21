@@ -68,14 +68,15 @@ def test_text_limits_and_format():
         "chart": "MASTER",
         "level": "12",
         "constant": 12.4,
-        "progress": 0.42,
+        "elapsed_seconds": 60,
+        "duration_seconds": 120,
         "achievement": 97.1234,
         "dx_score": 123,
         "combo": 42,
         "miss": 1,
     })
     assert "夜に駆ける" in normal
-    assert "MASTER" in normal and "定数 12.4" in normal and "42%" in normal
+    assert "MASTER" in normal and "定数 12.4" in normal and "时间 1:00 / 2:00" in normal
 
 
 def test_presence_format():
@@ -120,17 +121,41 @@ def test_target_validation():
 def test_udp_publish_and_throttle():
     receiver = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     receiver.bind(("127.0.0.1", 0))
-    receiver.settimeout(1.0)
+    receiver.settimeout(0.05)
     port = receiver.getsockname()[1]
     publisher = OscChatboxPublisher()
-    publisher.configure(True, "127.0.0.1", port, 1.0)
+    now = [100.0]
+    publisher._clock = lambda: now[0]
+    publisher.configure(True, "127.0.0.1", port, 0.5)
+    assert publisher.interval == 1.0
+
     assert publisher.publish("first") is True
-    assert publisher.publish("second") is False
     packet, _ = receiver.recvfrom(4096)
     assert decode_chatbox(packet)[0] == "first"
-    publisher.publish("second", force=True)
+
+    assert publisher.publish("second") is False
+    assert publisher.publish("forced", force=True) is False
+    try:
+        receiver.recvfrom(4096)
+    except TimeoutError:
+        pass
+    else:
+        raise AssertionError("force bypassed the hard OSC interval")
+
+    now[0] += 0.999
+    assert publisher.flush() is False
+    now[0] += 0.001
+    assert publisher.flush() is True
     packet, _ = receiver.recvfrom(4096)
-    assert decode_chatbox(packet)[0] == "second"
+    assert decode_chatbox(packet)[0] == "forced"
+
+    assert publisher.publish("stale", force=True) is False
+    assert publisher.publish("latest") is False
+    now[0] += 1.0
+    assert publisher.flush() is True
+    packet, _ = receiver.recvfrom(4096)
+    assert decode_chatbox(packet)[0] == "latest"
+
     publisher.close()
     receiver.close()
 
@@ -141,4 +166,4 @@ if __name__ == "__main__":
     test_presence_format()
     test_target_validation()
     test_udp_publish_and_throttle()
-    print("osc ok: encoding, Unicode limits, target validation, UDP, throttle")
+    print("osc ok: encoding, Unicode limits, target validation, UDP, hard throttle")

@@ -11,8 +11,8 @@ from i18n import DEFAULT_LANGUAGE, LANGUAGE_CODES, normalize_language, tr
 
 
 APP_NAME = "MaimaiVrchatOsc"
-APP_VERSION = "2.1.1"
-BRIDGE_VERSION = "1.4.6"
+APP_VERSION = "2.1.7"
+BRIDGE_VERSION = "1.4.12"
 
 DEFAULT_CONFIG = {
     "game_package": "",
@@ -109,12 +109,15 @@ def normalize_config(value):
     config["osc_player"] = _as_int(
         config["osc_player"], tr(language, "name.player"), 1, 2, language
     )
-    config["osc_update_interval"] = _as_float(
-        config["osc_update_interval"],
-        tr(language, "name.update_interval"),
-        0.5,
-        30.0,
-        language,
+    config["osc_update_interval"] = max(
+        1.0,
+        _as_float(
+            config["osc_update_interval"],
+            tr(language, "name.update_interval"),
+            0.5,
+            30.0,
+            language,
+        ),
     )
     config["osc_keepalive_interval"] = _as_float(
         config["osc_keepalive_interval"],

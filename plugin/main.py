@@ -79,7 +79,7 @@ async def main():
         "restart_required": False, "backup": "",
     }
     stream_state = {
-        "state": "pending", "detail": "等待 MaiDGBridge 数据流",
+        "state": "pending", "detail": "等待 XiaoLanMaiBrdge 数据流",
         "hint": "安装桥接后启动游戏；插件会自动重连",
     }
     osc_state = {
@@ -110,7 +110,7 @@ async def main():
                 "steps": [
                     {"key": "plugin", "title": "DGHub 插件进程", "state": "ok", "detail": "已连接 DGHub"},
                     {"key": "game_path", "title": "游戏目录", "state": bridge.get("path_state", "pending"), "detail": bridge.get("path_detail", "尚未找到游戏目录"), "hint": "可在插件配置中填写包含 Sinmai.exe 的 Package 目录"},
-                    {"key": "bridge_install", "title": "MaiDGBridge 自动安装", "state": bridge.get("state", "pending"), "detail": bridge.get("detail", "等待安装"), "hint": bridge.get("hint", "")},
+                    {"key": "bridge_install", "title": "XiaoLanMaiBrdge 自动安装", "state": bridge.get("state", "pending"), "detail": bridge.get("detail", "等待安装"), "hint": bridge.get("hint", "")},
                     {"key": "bridge_stream", "title": "游戏曲目数据", "state": stream_state["state"], "detail": stream_state["detail"], "hint": stream_state["hint"]},
                     {"key": "vrchat_osc", "title": "VRChat OSC", "state": osc_state["state"], "detail": osc_state["detail"], "hint": osc_state["hint"]},
                 ],
@@ -173,11 +173,27 @@ async def main():
         if osc.enabled:
             await publish(ws, text, force=force)
 
+    async def flush_pending(ws):
+        try:
+            sent = osc.flush()
+        except OSError as exc:
+            error = str(exc)
+            osc_state.update({"state": "fail", "detail": "OSC 发送失败：" + error, "hint": "检查目标 IPv4、网络连接和 VRChat 机防火墙"})
+            if error != last_osc_error[0]:
+                last_osc_error[0] = error
+                await log(ws, "error", "VRChat OSC 发送失败：" + error)
+                await send_status(ws)
+            return False
+        if sent:
+            last_osc_send_at[0] = time.monotonic()
+        return sent
+
     async def keepalive_loop(ws):
         while True:
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(0.25)
             if not osc.enabled or not osc_card["text"]:
                 continue
+            await flush_pending(ws)
             if time.monotonic() - last_osc_send_at[0] >= OSC_KEEPALIVE_SECONDS:
                 await publish(ws, osc_card["text"], force=True)
 

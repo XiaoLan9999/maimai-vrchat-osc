@@ -33,11 +33,11 @@ async def main():
         )
         await writer.drain()
 
-        async def event(payload, with_space=True):
+        async def event(payload, with_space=True, delay=0.12):
             prefix = b"data: " if with_space else b"data:"
             writer.write(prefix + json.dumps(payload).encode("utf-8") + b"\r\n\r\n")
             await writer.drain()
-            await asyncio.sleep(0.12)
+            await asyncio.sleep(delay)
 
         await event({
             "event": "counts", "status": "PLAYING", "player": 1, "track": 1,
@@ -45,15 +45,16 @@ async def main():
         })
         await event({
             "event": "presence", "status": "MENU", "version": "1.55.00",
-        })
+        }, delay=1.05)
         await event({
             "event": "presence", "status": "SELECTING", "remaining": 42,
             "timer_infinite": False, "title": "Test Song", "difficulty": "MASTER",
-        })
+        }, delay=1.05)
         await event({
             "event": "counts", "status": "PLAYING", "player": 1, "track": 1,
             "critical": 0, "perfect": 0, "great": 0, "good": 0, "miss": 1,
-        }, with_space=False)
+            "elapsed_seconds": 60, "duration_seconds": 120,
+        }, with_space=False, delay=1.05)
         await event({
             "event": "counts", "status": "PLAYING", "player": 1, "track": 1,
             "critical": 0, "perfect": 0, "great": 0, "good": 1, "miss": 1,
@@ -96,7 +97,7 @@ async def main():
                 "osc_host": "127.0.0.1",
                 "osc_port": str(osc_port),
                 "osc_player": "1",
-                "osc_update_interval": 0.5,
+                "osc_update_interval": 1.0,
             },
         }))
 
@@ -173,6 +174,7 @@ async def main():
         for message in received
     ), received
     assert any(b",sTF" in packet and b"ACH 0.0000%" in packet for packet in osc_packets), osc_packets
+    assert any("时间 1:00 / 2:00".encode("utf-8") in packet for packet in osc_packets), osc_packets
     assert any(b",sTF" in packet and b"RESULT 95.1234%" in packet for packet in osc_packets), osc_packets
     assert any(
         "『舞萌DX』".encode("utf-8") in packet

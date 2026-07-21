@@ -10,7 +10,7 @@ sys.path.insert(0, str(ROOT / "app"))
 
 from bridge_installer import ensure_bridge_installed  # noqa: E402
 from config_store import DEFAULT_CONFIG, load_config, normalize_config, save_config  # noqa: E402
-from osc import format_presence  # noqa: E402
+from osc import format_playing, format_presence, format_result  # noqa: E402
 from service import ActivityGate, CardState  # noqa: E402
 
 
@@ -33,6 +33,17 @@ def test_config():
         assert loaded["osc_show_version"] is True
         assert loaded["activity_retry_limit"] == 5
         assert not path.read_bytes().startswith(b"\xef\xbb\xbf")
+
+        legacy = dict(DEFAULT_CONFIG)
+        legacy["osc_update_interval"] = 0.5
+        assert normalize_config(legacy)["osc_update_interval"] == 1.0
+
+
+def test_guest_name_normalization():
+    assert CardState._is_guest_name("游客")
+    assert CardState._is_guest_name("ＧＵＥＳＴ")
+    assert CardState._is_guest_name(" guest ")
+    assert not CardState._is_guest_name("HeyiWei")
 
     for invalid in (
         {"endpoint": "http://10.0.0.1:8891/events"},
@@ -180,7 +191,7 @@ def test_card_state():
         "title": "Test Song",
         "achievement": 95.1234,
     }, 4.0)
-    assert "结算 95.1234%" in result["text"]
+    assert "结算：达成率 95.1234%" in result["text"]
     assert "『舞萌DX』 小蓝" in result["text"]
     assert "版本号 Ver.CN1.56-B" in result["text"]
     assert cards.handle({"event": "presence", "status": "MENU", "version": "x"}, 5.0) is None
@@ -216,8 +227,8 @@ def test_languages_and_version_toggle():
         "version": "Ver.CN1.56-B",
     }
     expected = {
-        "zh-CN": ("正在选歌", "大师", "难度：14", "版本号 Ver.CN1.56-B"),
-        "zh-TW": ("正在選歌", "大師", "難度：14", "版本號 Ver.CN1.56-B"),
+        "zh-CN": ("正在选歌", "【MASTER大师】", "难度：14", "版本号 Ver.CN1.56-B"),
+        "zh-TW": ("正在選歌", "【MASTER大師】", "難度：14", "版本號 Ver.CN1.56-B"),
         "ja-JP": ("楽曲選択中", "MASTER", "レベル：14", "バージョン Ver.CN1.56-B"),
         "en-US": ("Selecting song", "MASTER", "Level: 14", "Version Ver.CN1.56-B"),
     }
@@ -228,6 +239,53 @@ def test_languages_and_version_toggle():
         assert len(text) <= 144
         without_version = format_presence(event, language=language, show_version=False)
         assert "Ver.CN1.56-B" not in without_version
+
+    time_labels = {
+        "zh-CN": "时间 1:00 / 2:00",
+        "zh-TW": "時間 1:00 / 2:00",
+        "ja-JP": "時間 1:00 / 2:00",
+        "en-US": "Time 1:00 / 2:00",
+    }
+    for language, time_label in time_labels.items():
+        playing = format_playing({
+            "title": "Test Song",
+            "track": 1,
+            "elapsed_seconds": 60,
+            "duration_seconds": 120,
+        }, language=language, show_version=False)
+        assert time_label in playing, (language, playing)
+
+    result = format_result({
+        "track": 3,
+        "title": "Test Song",
+        "chart": "MASTER",
+        "level": "14",
+        "constant": 14.0,
+        "progress": 1.0,
+        "achievement": 0,
+        "dx_score": 0,
+        "combo": 0,
+        "miss": 80,
+    }, language="zh-CN", show_version=False)
+    assert "【MASTER大师】" in result
+    assert "TRACK 3" in result
+    assert "时间" not in result and "100%" not in result
+    assert "结算：达成率 0.0000% · DX分 0" in result
+
+    utage = format_presence({
+        "status": "SELECTING",
+        "remaining": 31,
+        "title": "[宴]人マニア",
+        "difficulty": "UTAGE X",
+        "level": "14",
+        "constant": 14.0,
+        "author": "Manager.MaiStudio.StringID",
+        "composer": "原口沙輔 feat.重音テト",
+    }, language="zh-CN", show_version=False)
+    assert "【UTAGE宴会场 X】" in utage
+    assert "难度：14  定数：14.0" in utage
+    assert "Manager.MaiStudio.StringID" not in utage
+    assert "作者：未知" in utage
 
     starts = {
         "zh-CN": "机台启动中",
@@ -265,15 +323,15 @@ def test_bridge_coexistence():
         bundled = b"standalone bridge build"
         installed_hash = hashlib.sha256(installed).hexdigest()
         bundled_hash = hashlib.sha256(bundled).hexdigest()
-        (package / "Mods" / "MaiDGBridge.dll").write_bytes(installed)
-        (package / "MaiDGBridge.ini").write_text("Enabled=true\n", encoding="utf-8")
-        (package / "MaiDGBridge.dghub.json").write_text(json.dumps({
+        (package / "Mods" / "XiaoLanMaiBrdge.dll").write_bytes(installed)
+        (package / "XiaoLanMaiBrdge.ini").write_text("Enabled=true\n", encoding="utf-8")
+        (package / "XiaoLanMaiBrdge.dghub.json").write_text(json.dumps({
             "plugin": "maimai_link",
             "bridge_version": "1.4.2",
             "dll_sha256": installed_hash,
         }), encoding="utf-8")
-        (payload / "MaiDGBridge.dll").write_bytes(bundled)
-        (payload / "MaiDGBridge.ini").write_text("Enabled=true\n", encoding="utf-8")
+        (payload / "XiaoLanMaiBrdge.dll").write_bytes(bundled)
+        (payload / "XiaoLanMaiBrdge.ini").write_text("Enabled=true\n", encoding="utf-8")
         (payload / "bridge.json").write_text(json.dumps({
             "plugin_version": "2.0.1",
             "bridge_version": "1.4.2",
@@ -284,12 +342,13 @@ def test_bridge_coexistence():
             str(resource), str(package), auto_detect=False, running_packages=[]
         )
         assert result["state"] == "ok", result
-        assert (package / "Mods" / "MaiDGBridge.dll").read_bytes() == installed
+        assert (package / "Mods" / "XiaoLanMaiBrdge.dll").read_bytes() == installed
         assert not result["backup"], result
 
 
 if __name__ == "__main__":
     test_config()
+    test_guest_name_normalization()
     test_card_state()
     test_languages_and_version_toggle()
     test_activity_gate()

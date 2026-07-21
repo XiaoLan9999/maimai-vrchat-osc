@@ -12,18 +12,22 @@ using HarmonyLib;
 using Manager;
 using MelonLoader;
 
-[assembly: MelonInfo(typeof(MaiDGBridge.BridgeMod), "MaiDGBridge", "1.4.6", "XiaoLan9999", "")]
+[assembly: MelonInfo(typeof(MaiDGBridge.BridgeMod), "XiaoLanMaiBrdge", "1.4.12", "XiaoLan9999", "")]
 [assembly: MelonGame("sega-interactive", "Sinmai")]
 
 namespace MaiDGBridge
 {
     public sealed class BridgeMod : MelonMod
     {
+        private const int GameplayMetricsIntervalMs = 1000;
         private readonly Snapshot[] _last = new Snapshot[2];
         private readonly Snapshot[] _hookCounts = new Snapshot[2];
+        private readonly bool[] _judgePublishPending = new bool[2];
         private readonly Snapshot[] _lastResult = new Snapshot[2];
+        private Snapshot _selectedMetadata;
         private readonly Stopwatch _clock = Stopwatch.StartNew();
         private static BridgeMod _active;
+        private static object _advertiseProcess;
         private static object _entryProcess;
         private static object _modeSelectProcess;
         private static object _mapSelectProcess;
@@ -35,29 +39,37 @@ namespace MaiDGBridge
         private static object _resultProcess;
         private static bool _sessionStarted;
         private SseServer _server;
-        private PresenceSnapshot _lastPresence;
         private bool _wasInGame;
         private bool _judgeHookObserved;
         private bool _metadataWarningLogged;
+        private bool _gameplayMetricsWarningLogged;
+        private bool _gameplayTimeResolved;
+        private bool _presenceRefreshRequested = true;
+        private bool _resultRefreshRequested;
+        private MethodInfo _notesManagerInstanceMethod;
+        private MethodInfo _notesCurrentMsecMethod;
+        private MethodInfo _notesPlayFirstMsecMethod;
+        private MethodInfo _notesPlayFinalMsecMethod;
         private string _cachedVersion = string.Empty;
         private string _cachedUserName = string.Empty;
-        private long _lastPeriodicPublish;
         private long _lastPresencePublish;
+        private long _lastResultPublish;
+        private long _lastGameplayMetricsCapture;
         private long _lastErrorLog;
         private long _resultHoldUntil;
         private int _publishIntervalMs = 250;
-        private int _presenceIntervalMs = 1000;
+        private int _presenceIntervalMs = 250;
 
         public override void OnInitializeMelon()
         {
             _active = this;
-            BridgeConfig config = BridgeConfig.Load(Path.Combine(Environment.CurrentDirectory, "MaiDGBridge.ini"));
+            BridgeConfig config = BridgeConfig.Load(Path.Combine(Environment.CurrentDirectory, "XiaoLanMaiBrdge.ini"));
             _publishIntervalMs = config.PublishIntervalMs;
             _presenceIntervalMs = config.PresenceIntervalMs;
 
             if (!config.Enabled)
             {
-                MelonLogger.Msg("MaiDGBridge is disabled by MaiDGBridge.ini");
+                MelonLogger.Msg("XiaoLanMaiBrdge is disabled by XiaoLanMaiBrdge.ini");
                 return;
             }
 
@@ -66,16 +78,17 @@ namespace MaiDGBridge
                 _server = new SseServer(config.Port);
                 _server.Start();
                 PatchJudgeResults();
+                PatchAdvertiseProcesses();
                 PatchEntryProcess();
                 PatchModeSelectProcess();
                 PatchAuxiliaryPresenceProcesses();
                 PatchMusicSelect();
                 PatchResultProcess();
-                MelonLogger.Msg("MaiDGBridge listening on http://127.0.0.1:" + config.Port + "/events");
+                MelonLogger.Msg("XiaoLanMaiBrdge listening on http://127.0.0.1:" + config.Port + "/events");
             }
             catch (Exception ex)
             {
-                MelonLogger.Error("MaiDGBridge failed to start: " + ex.Message);
+                MelonLogger.Error("XiaoLanMaiBrdge failed to start: " + ex.Message);
                 _server = null;
             }
         }
@@ -92,7 +105,7 @@ namespace MaiDGBridge
                 bool inGame = GameManager.IsInGame;
                 long now = _clock.ElapsedMilliseconds;
 
-                if (_resultProcess != null)
+                if (_resultProcess != null && ShouldCaptureResult(now))
                 {
                     CaptureResultEvents(now);
                 }
@@ -103,36 +116,28 @@ namespace MaiDGBridge
                     {
                         _last[0] = null;
                         _last[1] = null;
-                        _hookCounts[0] = null;
-                        _hookCounts[1] = null;
+                        if (!_judgePublishPending[0])
+                        {
+                            _hookCounts[0] = null;
+                        }
+                        if (!_judgePublishPending[1])
+                        {
+                            _hookCounts[1] = null;
+                        }
                         _lastResult[0] = null;
                         _lastResult[1] = null;
                         _resultHoldUntil = 0;
-                        _lastPresence = null;
+                        _lastGameplayMetricsCapture = now - GameplayMetricsIntervalMs;
                         _server.PublishJson("{\"event\":\"state\",\"status\":\"PLAYING\"}");
+                        PublishGameplayStart();
                     }
 
-                    bool periodic = now - _lastPeriodicPublish >= _publishIntervalMs;
-                    for (int player = 0; player < 2; player++)
-                    {
-                        Snapshot current = Capture(player, periodic);
-                        if (current != null && (periodic || !current.SameValues(_last[player])))
-                        {
-                            _server.PublishJson(current.ToJson("counts", "PLAYING"));
-                        }
-                        if (current != null)
-                        {
-                            _last[player] = current;
-                        }
-                    }
-
-                    if (periodic)
-                    {
-                        _lastPeriodicPublish = now;
-                    }
+                    CaptureGameplayMetrics(now);
+                    PublishPendingJudgements();
                 }
                 else if (_wasInGame)
                 {
+                    PublishPendingJudgements();
                     for (int player = 0; player < 2; player++)
                     {
                         Snapshot result = _last[player];
@@ -145,20 +150,15 @@ namespace MaiDGBridge
                         _last[player] = null;
                     }
                     _server.PublishJson("{\"event\":\"state\",\"status\":\"IDLE\"}");
+                    _presenceRefreshRequested = true;
                 }
 
-                if (!inGame)
+                if (!inGame && ShouldCapturePresence(now))
                 {
-                    bool presencePeriodic = now - _lastPresencePublish >= _presenceIntervalMs;
                     PresenceSnapshot presence = CapturePresence();
-                    if (presence != null && (presencePeriodic || !presence.SameValues(_lastPresence)))
+                    if (presence != null)
                     {
                         _server.PublishJson(presence.ToJson());
-                        _lastPresence = presence;
-                    }
-                    if (presencePeriodic)
-                    {
-                        _lastPresencePublish = now;
                     }
                 }
 
@@ -169,7 +169,7 @@ namespace MaiDGBridge
                 long now = _clock.ElapsedMilliseconds;
                 if (now - _lastErrorLog >= 5000)
                 {
-                    MelonLogger.Warning("MaiDGBridge capture error: " + ex.Message);
+                    MelonLogger.Warning("XiaoLanMaiBrdge capture error: " + ex.Message);
                     _lastErrorLog = now;
                 }
             }
@@ -191,6 +191,7 @@ namespace MaiDGBridge
             {
                 _active = null;
             }
+            _advertiseProcess = null;
             _musicSelectProcess = null;
             _entryProcess = null;
             _modeSelectProcess = null;
@@ -211,7 +212,7 @@ namespace MaiDGBridge
 
         private void PatchJudgeResults()
         {
-            HarmonyLib.Harmony harmony = new HarmonyLib.Harmony("MaiDGBridge.JudgeResultHook");
+            HarmonyLib.Harmony harmony = new HarmonyLib.Harmony("XiaoLanMaiBrdge.JudgeResultHook");
             System.Reflection.MethodInfo original = AccessTools.Method(
                 typeof(JudgeResultSt),
                 "UpdateScore",
@@ -224,7 +225,7 @@ namespace MaiDGBridge
                 throw new MissingMethodException("JudgeResultSt.UpdateScore hook target was not found");
             }
             harmony.Patch(original, null, new HarmonyMethod(postfix));
-            MelonLogger.Msg("MaiDGBridge judge hook installed");
+            MelonLogger.Msg("XiaoLanMaiBrdge judge hook installed");
         }
 
         private void PatchEntryProcess()
@@ -232,7 +233,7 @@ namespace MaiDGBridge
             System.Type type = AccessTools.TypeByName("Process.EntryProcess");
             if (type == null)
             {
-                MelonLogger.Warning("MaiDGBridge entry process type was not found");
+                MelonLogger.Warning("XiaoLanMaiBrdge entry process type was not found");
                 return;
             }
 
@@ -242,14 +243,14 @@ namespace MaiDGBridge
             MethodInfo releasePostfix = AccessTools.Method(typeof(BridgeMod), "EntryReleasePostfix");
             if (onStart == null || onRelease == null || startPostfix == null || releasePostfix == null)
             {
-                MelonLogger.Warning("MaiDGBridge entry process hooks were not found");
+                MelonLogger.Warning("XiaoLanMaiBrdge entry process hooks were not found");
                 return;
             }
 
-            HarmonyLib.Harmony harmony = new HarmonyLib.Harmony("MaiDGBridge.EntryPresenceHook");
+            HarmonyLib.Harmony harmony = new HarmonyLib.Harmony("XiaoLanMaiBrdge.EntryPresenceHook");
             harmony.Patch(onStart, null, new HarmonyMethod(startPostfix));
             harmony.Patch(onRelease, null, new HarmonyMethod(releasePostfix));
-            MelonLogger.Msg("MaiDGBridge entry process presence hook installed");
+            MelonLogger.Msg("XiaoLanMaiBrdge entry process presence hook installed");
         }
 
         private static void EntryStartPostfix(object __instance)
@@ -260,6 +261,40 @@ namespace MaiDGBridge
             {
                 _active._cachedUserName = string.Empty;
             }
+            RequestPresenceRefresh();
+        }
+
+        private bool ShouldCapturePresence(long now)
+        {
+            if (!_presenceRefreshRequested && now - _lastPresencePublish < _presenceIntervalMs)
+            {
+                return false;
+            }
+
+            _presenceRefreshRequested = false;
+            _lastPresencePublish = now;
+            return true;
+        }
+
+        private bool ShouldCaptureResult(long now)
+        {
+            if (!_resultRefreshRequested && now - _lastResultPublish < _publishIntervalMs)
+            {
+                return false;
+            }
+
+            _resultRefreshRequested = false;
+            _lastResultPublish = now;
+            return true;
+        }
+
+        private static void RequestPresenceRefresh()
+        {
+            BridgeMod active = _active;
+            if (active != null)
+            {
+                active._presenceRefreshRequested = true;
+            }
         }
 
         private static void EntryReleasePostfix(object __instance)
@@ -267,7 +302,71 @@ namespace MaiDGBridge
             if (ReferenceEquals(_entryProcess, __instance))
             {
                 _entryProcess = null;
-                _sessionStarted = HasEnteredUser();
+                ActivateSession();
+            }
+        }
+
+        private void PatchAdvertiseProcesses()
+        {
+            PatchAdvertiseProcess("Process.AdvertiseProcess");
+            PatchAdvertiseProcess("Process.AdvertiseCommercial.AdvertiseCommercialProcess");
+        }
+
+        private static void PatchAdvertiseProcess(string typeName)
+        {
+            System.Type type = AccessTools.TypeByName(typeName);
+            if (type == null)
+            {
+                return;
+            }
+
+            MethodInfo onStart = AccessTools.Method(type, "OnStart");
+            MethodInfo onRelease = AccessTools.Method(type, "OnRelease");
+            MethodInfo startPostfix = AccessTools.Method(typeof(BridgeMod), "AdvertiseStartPostfix");
+            MethodInfo releasePostfix = AccessTools.Method(typeof(BridgeMod), "AdvertiseReleasePostfix");
+            if (onStart == null || onRelease == null || startPostfix == null || releasePostfix == null)
+            {
+                return;
+            }
+
+            HarmonyLib.Harmony harmony = new HarmonyLib.Harmony(
+                "XiaoLanMaiBrdge.AdvertisePresenceHook." + typeName);
+            harmony.Patch(onStart, null, new HarmonyMethod(startPostfix));
+            harmony.Patch(onRelease, null, new HarmonyMethod(releasePostfix));
+            MelonLogger.Msg("XiaoLanMaiBrdge main menu hook installed: " + typeName);
+        }
+
+        private static void AdvertiseStartPostfix(object __instance)
+        {
+            _advertiseProcess = __instance;
+            _entryProcess = null;
+            _modeSelectProcess = null;
+            _mapSelectProcess = null;
+            _ticketSelectProcess = null;
+            _characterSelectProcess = null;
+            _transitionProcess = null;
+            _transitionStatus = null;
+            _musicSelectProcess = null;
+            _resultProcess = null;
+            _sessionStarted = false;
+            BridgeMod active = _active;
+            if (active != null)
+            {
+                active._cachedUserName = string.Empty;
+                active._selectedMetadata = null;
+                active._resultHoldUntil = 0;
+                active._lastResult[0] = null;
+                active._lastResult[1] = null;
+            }
+            RequestPresenceRefresh();
+        }
+
+        private static void AdvertiseReleasePostfix(object __instance)
+        {
+            if (ReferenceEquals(_advertiseProcess, __instance))
+            {
+                _advertiseProcess = null;
+                RequestPresenceRefresh();
             }
         }
 
@@ -276,7 +375,7 @@ namespace MaiDGBridge
             System.Type type = AccessTools.TypeByName("Process.ModeSelect.ModeSelectProcess");
             if (type == null)
             {
-                MelonLogger.Warning("MaiDGBridge mode select process type was not found");
+                MelonLogger.Warning("XiaoLanMaiBrdge mode select process type was not found");
                 return;
             }
 
@@ -286,20 +385,20 @@ namespace MaiDGBridge
             MethodInfo releasePostfix = AccessTools.Method(typeof(BridgeMod), "ModeSelectReleasePostfix");
             if (onStart == null || onRelease == null || startPostfix == null || releasePostfix == null)
             {
-                MelonLogger.Warning("MaiDGBridge mode select process hooks were not found");
+                MelonLogger.Warning("XiaoLanMaiBrdge mode select process hooks were not found");
                 return;
             }
 
-            HarmonyLib.Harmony harmony = new HarmonyLib.Harmony("MaiDGBridge.ModeSelectPresenceHook");
+            HarmonyLib.Harmony harmony = new HarmonyLib.Harmony("XiaoLanMaiBrdge.ModeSelectPresenceHook");
             harmony.Patch(onStart, null, new HarmonyMethod(startPostfix));
             harmony.Patch(onRelease, null, new HarmonyMethod(releasePostfix));
-            MelonLogger.Msg("MaiDGBridge mode select presence hook installed");
+            MelonLogger.Msg("XiaoLanMaiBrdge mode select presence hook installed");
         }
 
         private static void ModeSelectStartPostfix(object __instance)
         {
             _modeSelectProcess = __instance;
-            _sessionStarted = _sessionStarted || HasEnteredUser();
+            ActivateSession();
         }
 
         private static void ModeSelectReleasePostfix(object __instance)
@@ -307,6 +406,7 @@ namespace MaiDGBridge
             if (ReferenceEquals(_modeSelectProcess, __instance))
             {
                 _modeSelectProcess = null;
+                RequestPresenceRefresh();
             }
         }
 
@@ -336,14 +436,14 @@ namespace MaiDGBridge
             MethodInfo releasePostfix = AccessTools.Method(typeof(BridgeMod), "AuxiliaryReleasePostfix");
             if (onStart == null || onRelease == null || startPostfix == null || releasePostfix == null)
             {
-                MelonLogger.Warning("MaiDGBridge auxiliary process hooks were not found: " + typeName);
+                MelonLogger.Warning("XiaoLanMaiBrdge auxiliary process hooks were not found: " + typeName);
                 return;
             }
 
-            HarmonyLib.Harmony harmony = new HarmonyLib.Harmony("MaiDGBridge.Auxiliary." + typeName);
+            HarmonyLib.Harmony harmony = new HarmonyLib.Harmony("XiaoLanMaiBrdge.Auxiliary." + typeName);
             harmony.Patch(onStart, null, new HarmonyMethod(startPostfix));
             harmony.Patch(onRelease, null, new HarmonyMethod(releasePostfix));
-            MelonLogger.Msg("MaiDGBridge auxiliary process hook installed: " + typeName);
+            MelonLogger.Msg("XiaoLanMaiBrdge auxiliary process hook installed: " + typeName);
         }
 
         private static void AuxiliaryStartPostfix(object __instance)
@@ -371,23 +471,37 @@ namespace MaiDGBridge
                 return;
             }
 
+            _presenceRefreshRequested = true;
+
             string typeName = process.GetType().FullName ?? string.Empty;
             if (typeName == "Process.RegionalSelectProcess")
             {
                 _mapSelectProcess = active ? process :
                     (ReferenceEquals(_mapSelectProcess, process) ? null : _mapSelectProcess);
+                if (active)
+                {
+                    ActivateSession();
+                }
                 return;
             }
             if (typeName == "Process.TicketSelect.TicketSelectProcess")
             {
                 _ticketSelectProcess = active ? process :
                     (ReferenceEquals(_ticketSelectProcess, process) ? null : _ticketSelectProcess);
+                if (active)
+                {
+                    ActivateSession();
+                }
                 return;
             }
             if (typeName == "Process.CharacterSelectProces")
             {
                 _characterSelectProcess = active ? process :
                     (ReferenceEquals(_characterSelectProcess, process) ? null : _characterSelectProcess);
+                if (active)
+                {
+                    ActivateSession();
+                }
                 return;
             }
 
@@ -430,7 +544,7 @@ namespace MaiDGBridge
             System.Type type = AccessTools.TypeByName("Process.MusicSelectProcess");
             if (type == null)
             {
-                MelonLogger.Warning("MaiDGBridge music select type was not found; menu presence only");
+                MelonLogger.Warning("XiaoLanMaiBrdge music select type was not found; menu presence only");
                 return;
             }
 
@@ -440,20 +554,20 @@ namespace MaiDGBridge
             MethodInfo releasePostfix = AccessTools.Method(typeof(BridgeMod), "MusicSelectReleasePostfix");
             if (onStart == null || onRelease == null || startPostfix == null || releasePostfix == null)
             {
-                MelonLogger.Warning("MaiDGBridge music select hooks were not found; menu presence only");
+                MelonLogger.Warning("XiaoLanMaiBrdge music select hooks were not found; menu presence only");
                 return;
             }
 
-            HarmonyLib.Harmony harmony = new HarmonyLib.Harmony("MaiDGBridge.MusicSelectPresenceHook");
+            HarmonyLib.Harmony harmony = new HarmonyLib.Harmony("XiaoLanMaiBrdge.MusicSelectPresenceHook");
             harmony.Patch(onStart, null, new HarmonyMethod(startPostfix));
             harmony.Patch(onRelease, null, new HarmonyMethod(releasePostfix));
-            MelonLogger.Msg("MaiDGBridge music select presence hook installed");
+            MelonLogger.Msg("XiaoLanMaiBrdge music select presence hook installed");
         }
 
         private static void MusicSelectStartPostfix(object __instance)
         {
             _musicSelectProcess = __instance;
-            _sessionStarted = _sessionStarted || HasEnteredUser();
+            ActivateSession();
         }
 
         private static void MusicSelectReleasePostfix(object __instance)
@@ -461,6 +575,7 @@ namespace MaiDGBridge
             if (ReferenceEquals(_musicSelectProcess, __instance))
             {
                 _musicSelectProcess = null;
+                RequestPresenceRefresh();
             }
         }
 
@@ -469,7 +584,7 @@ namespace MaiDGBridge
             System.Type type = AccessTools.TypeByName("Process.ResultProcess");
             if (type == null)
             {
-                MelonLogger.Warning("MaiDGBridge result process type was not found");
+                MelonLogger.Warning("XiaoLanMaiBrdge result process type was not found");
                 return;
             }
 
@@ -479,26 +594,27 @@ namespace MaiDGBridge
             MethodInfo releasePostfix = AccessTools.Method(typeof(BridgeMod), "ResultReleasePostfix");
             if (onStart == null || onRelease == null || startPostfix == null || releasePostfix == null)
             {
-                MelonLogger.Warning("MaiDGBridge result process hooks were not found");
+                MelonLogger.Warning("XiaoLanMaiBrdge result process hooks were not found");
                 return;
             }
 
-            HarmonyLib.Harmony harmony = new HarmonyLib.Harmony("MaiDGBridge.ResultPresenceHook");
+            HarmonyLib.Harmony harmony = new HarmonyLib.Harmony("XiaoLanMaiBrdge.ResultPresenceHook");
             harmony.Patch(onStart, null, new HarmonyMethod(startPostfix));
             harmony.Patch(onRelease, null, new HarmonyMethod(releasePostfix));
-            MelonLogger.Msg("MaiDGBridge result presence hook installed");
+            MelonLogger.Msg("XiaoLanMaiBrdge result presence hook installed");
         }
 
         private static void ResultStartPostfix(object __instance)
         {
             _resultProcess = __instance;
-            _sessionStarted = _sessionStarted || HasEnteredUser();
+            ActivateSession();
             BridgeMod active = _active;
             if (active != null)
             {
                 active._lastResult[0] = null;
                 active._lastResult[1] = null;
                 active._resultHoldUntil = 0;
+                active._resultRefreshRequested = true;
             }
         }
 
@@ -507,10 +623,15 @@ namespace MaiDGBridge
             if (ReferenceEquals(_resultProcess, __instance))
             {
                 _resultProcess = null;
+                RequestPresenceRefresh();
                 BridgeMod active = _active;
-                if (active != null && (active._lastResult[0] != null || active._lastResult[1] != null))
+                if (active != null)
                 {
-                    active._resultHoldUntil = active._clock.ElapsedMilliseconds + 10000;
+                    active._resultRefreshRequested = false;
+                    if (active._lastResult[0] != null || active._lastResult[1] != null)
+                    {
+                        active._resultHoldUntil = active._clock.ElapsedMilliseconds + 10000;
+                    }
                 }
             }
         }
@@ -601,7 +722,18 @@ namespace MaiDGBridge
                     snapshot.Achievement = ToDecimal(
                         InvokeNoArg(score, "GetAchivement") ?? InvokeNoArg(score, "GetAchievement"));
                 }
-                ApplyResultMetadata(snapshot, musicId, difficulty);
+                Snapshot metadataSource = _lastResult[player] ?? previous;
+                if (metadataSource != null &&
+                    metadataSource.MusicId == snapshot.MusicId &&
+                    metadataSource.Difficulty == snapshot.Difficulty &&
+                    !string.IsNullOrEmpty(metadataSource.Title))
+                {
+                    CopyMetadata(metadataSource, snapshot);
+                }
+                else
+                {
+                    ApplyResultMetadata(snapshot, musicId, difficulty);
+                }
                 if (previous != null)
                 {
                     if (snapshot.MusicId <= 0 || string.IsNullOrEmpty(snapshot.Title))
@@ -621,7 +753,7 @@ namespace MaiDGBridge
                 if (!_metadataWarningLogged)
                 {
                     _metadataWarningLogged = true;
-                    MelonLogger.Warning("MaiDGBridge result capture unavailable: " + ex.Message);
+                    MelonLogger.Warning("XiaoLanMaiBrdge result capture unavailable: " + ex.Message);
                 }
                 return null;
             }
@@ -660,15 +792,17 @@ namespace MaiDGBridge
                 return;
             }
 
+            bool isUtage = IsUtageMusic(music, musicId);
+            int notesDifficulty = isUtage ? 0 : difficulty;
             snapshot.MusicId = musicId;
-            snapshot.Difficulty = difficulty;
-            snapshot.Chart = DifficultyName(difficulty);
+            snapshot.Difficulty = isUtage ? 5 : difficulty;
+            snapshot.Chart = isUtage ? UtageChartName(music) : DifficultyName(difficulty);
             snapshot.Title = ReadStringId(music, "name");
             snapshot.Composer = ReadStringId(music, "artistName");
             snapshot.Artist = snapshot.Composer;
 
             object notes = ReadIndex(
-                ReadFirstMember(music, "notesData", "NotesData", "ScoreData", "scoreData"), difficulty);
+                ReadFirstMember(music, "notesData", "NotesData", "ScoreData", "scoreData"), notesDifficulty);
             if (notes == null)
             {
                 return;
@@ -691,18 +825,20 @@ namespace MaiDGBridge
         private PresenceSnapshot CapturePresence()
         {
             PresenceSnapshot presence = new PresenceSnapshot();
-            string version = ReadVersion();
-            if (!string.IsNullOrEmpty(version))
+            if (string.IsNullOrEmpty(_cachedVersion))
             {
-                _cachedVersion = version;
+                _cachedVersion = ReadVersion();
             }
             presence.Version = _cachedVersion;
             if (_sessionStarted)
             {
-                string userName = ReadUserName();
-                if (!IsGuestName(userName))
+                if (IsGuestName(_cachedUserName))
                 {
-                    _cachedUserName = userName;
+                    string userName = ReadUserName();
+                    if (!IsGuestName(userName))
+                    {
+                        _cachedUserName = userName;
+                    }
                 }
                 presence.UserName = _cachedUserName;
             }
@@ -711,6 +847,12 @@ namespace MaiDGBridge
                 presence.Status = "LOGIN";
                 presence.Remaining = ReadProcessRemaining(_entryProcess);
                 presence.TimerInfinite = ReadProcessTimerInfinite(_entryProcess);
+                return presence;
+            }
+            if (_advertiseProcess != null)
+            {
+                presence.Status = "MENU";
+                presence.UserName = string.Empty;
                 return presence;
             }
             if (_modeSelectProcess != null)
@@ -785,6 +927,14 @@ namespace MaiDGBridge
                 musicSelectData = selected ?? currentSelection;
             }
             presence.DifficultyId = ReadSelectedDifficulty(process, musicSelectData);
+            presence.GameDifficultyId = ReadDifficultyValue(InvokeMethod(process, "GetDifficulty", 0, 0));
+            presence.CurrentDifficultyId = ReadDifficultyValue(InvokeMethod(process, "GetCurrentDifficulty", 0));
+            presence.SelectDifficultyIndex = ReadDifficultyValue(
+                InvokeMethod(process, "GetDifficultySelectIndex", 0));
+            presence.CardDifficultyId = ReadDifficultyValue(ReadFirstMember(
+                musicSelectData, "Difficulty", "difficulty", "DifficultyId", "difficultyId"));
+            presence.IsLevelTab = ToBool(InvokeMethod(process, "IsLevelTab", 0));
+            presence.IsExtraFolder = ToBool(InvokeMethod(process, "IsExtraFolder", 0));
             presence.Difficulty = DifficultyName(presence.DifficultyId);
             object music = ReadMember(musicSelectData, "MusicData");
             if (music == null)
@@ -792,14 +942,27 @@ namespace MaiDGBridge
                 music = musicSelectData;
             }
             presence.MusicId = ToInt(ReadMember(music, "id"));
+            if (presence.MusicId <= 0)
+            {
+                presence.MusicId = ToInt(ReadMember(ReadMember(music, "name"), "id"));
+            }
             presence.Title = ReadStringId(music, "name");
             presence.Composer = ReadStringId(music, "artistName");
             presence.Artist = presence.Composer;
 
-            object notes = ReadIndex(ReadFirstMember(musicSelectData, "ScoreData", "scoreData"), presence.DifficultyId);
+            bool isUtage = IsUtageMusic(music, presence.MusicId);
+            int notesDifficulty = presence.DifficultyId;
+            if (isUtage)
+            {
+                notesDifficulty = 0;
+                presence.DifficultyId = 5;
+                presence.Difficulty = UtageChartName(music);
+            }
+
+            object notes = ReadIndex(ReadFirstMember(musicSelectData, "ScoreData", "scoreData"), notesDifficulty);
             if (notes == null)
             {
-                notes = ReadIndex(ReadFirstMember(music, "notesData", "NotesData", "ScoreData"), presence.DifficultyId);
+                notes = ReadIndex(ReadFirstMember(music, "notesData", "NotesData", "ScoreData"), notesDifficulty);
             }
             if (notes != null)
             {
@@ -828,12 +991,41 @@ namespace MaiDGBridge
             object timerEntry = ReadIndex(timer, 0);
             presence.Remaining = ToInt(ReadMember(timerEntry, "CountDownSecond"));
             presence.TimerInfinite = ToBool(ReadMember(timerEntry, "IsInfinity"));
+            CacheSelectedMetadata(presence);
             return presence;
+        }
+
+        private void CacheSelectedMetadata(PresenceSnapshot presence)
+        {
+            if (presence == null || presence.MusicId <= 0)
+            {
+                return;
+            }
+
+            _selectedMetadata = new Snapshot
+            {
+                MusicId = presence.MusicId,
+                Difficulty = presence.DifficultyId,
+                Title = presence.Title,
+                Artist = presence.Artist,
+                Author = presence.Author,
+                Composer = presence.Composer,
+                Chart = presence.Difficulty,
+                Level = presence.Level,
+                Constant = presence.Constant
+            };
         }
 
         private static int ReadSelectedDifficulty(object process, object selected)
         {
-            bool levelTab = ToBool(InvokeNoArg(process, "IsLevelTab"));
+            object gameDifficulty = InvokeMethod(process, "GetDifficulty", 0, 0);
+            int gameDifficultyValue = ReadDifficultyValue(gameDifficulty);
+            if (gameDifficultyValue >= 0)
+            {
+                return gameDifficultyValue;
+            }
+
+            bool levelTab = ToBool(InvokeMethod(process, "IsLevelTab", 0));
             bool extraFolder = ToBool(InvokeMethod(process, "IsExtraFolder", 0));
             if (!levelTab && !extraFolder)
             {
@@ -878,6 +1070,12 @@ namespace MaiDGBridge
             return currentValue != null && currentDifficulty >= 0 && currentDifficulty < 6
                 ? currentDifficulty
                 : -1;
+        }
+
+        private static int ReadDifficultyValue(object value)
+        {
+            int difficulty = ToInt(value);
+            return value != null && difficulty >= 0 && difficulty < 6 ? difficulty : -1;
         }
 
         private static int ReadProcessRemaining(object process)
@@ -1000,6 +1198,12 @@ namespace MaiDGBridge
             {
                 return null;
             }
+            if (arguments != null && arguments.Length == 2)
+            {
+                MethodInfo pairMethod = FindMethod(
+                    target.GetType(), name, false, typeof(int), typeof(int));
+                return pairMethod == null ? null : pairMethod.Invoke(target, arguments);
+            }
             MethodInfo method = FindMethod(target.GetType(), name, false, typeof(int));
             if (method != null)
             {
@@ -1059,7 +1263,7 @@ namespace MaiDGBridge
                     {
                         object user = InvokeMethod(userManager, "GetUserData", index);
                         string name = ReadUserNameFromData(user);
-                        if (!string.IsNullOrEmpty(name))
+                        if (!IsGuestName(name))
                         {
                             return name;
                         }
@@ -1074,7 +1278,7 @@ namespace MaiDGBridge
                     {
                         object user = InvokeMethod(netManager, "GetNetUserData", index);
                         string name = ReadUserNameFromData(user);
-                        if (!string.IsNullOrEmpty(name))
+                        if (!IsGuestName(name))
                         {
                             return name;
                         }
@@ -1114,6 +1318,22 @@ namespace MaiDGBridge
             return false;
         }
 
+        private static void ActivateSession()
+        {
+            _sessionStarted = true;
+            BridgeMod active = _active;
+            if (active == null)
+            {
+                return;
+            }
+            string userName = ReadUserName();
+            if (!IsGuestName(userName))
+            {
+                active._cachedUserName = userName;
+            }
+            active._presenceRefreshRequested = true;
+        }
+
         private static string ReadUserNameFromData(object user)
         {
             if (user == null)
@@ -1131,7 +1351,14 @@ namespace MaiDGBridge
 
         private static bool IsGuestName(string name)
         {
-            return string.IsNullOrEmpty(name) || string.Equals(name, "游客", StringComparison.Ordinal);
+            if (string.IsNullOrEmpty(name))
+            {
+                return true;
+            }
+            string normalized = name.Normalize(NormalizationForm.FormKC).Trim();
+            return string.Equals(normalized, "\u6e38\u5ba2", StringComparison.Ordinal) ||
+                   string.Equals(normalized, "GUEST", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(normalized, "\u30b2\u30b9\u30c8", StringComparison.Ordinal);
         }
 
         private static string ReadVersion()
@@ -1179,6 +1406,167 @@ namespace MaiDGBridge
             }
         }
 
+        private void PublishGameplayStart()
+        {
+            uint track = GameManager.MusicTrackNumber;
+            for (int player = 0; player < 2; player++)
+            {
+                Snapshot counts = _hookCounts[player];
+                if (counts == null || counts.Track != track)
+                {
+                    counts = new Snapshot { Player = player + 1, Track = track };
+                    if (_selectedMetadata != null)
+                    {
+                        CopyMetadata(_selectedMetadata, counts);
+                    }
+                    ApplyIdentity(counts);
+                    _hookCounts[player] = counts;
+                }
+                _last[player] = counts;
+                _server.PublishJson(counts.ToJson("counts", "PLAYING"));
+                _judgePublishPending[player] = false;
+            }
+        }
+
+        private void PublishPendingJudgements()
+        {
+            for (int player = 0; player < 2; player++)
+            {
+                if (!_judgePublishPending[player])
+                {
+                    continue;
+                }
+
+                Snapshot counts = _hookCounts[player];
+                if (counts != null)
+                {
+                    _server.PublishJson(counts.ToJson("counts", "PLAYING"));
+                }
+                _judgePublishPending[player] = false;
+            }
+        }
+
+        private void CaptureGameplayMetrics(long now)
+        {
+            if (now - _lastGameplayMetricsCapture < GameplayMetricsIntervalMs)
+            {
+                return;
+            }
+
+            bool sampled = false;
+            uint track = GameManager.MusicTrackNumber;
+            for (int player = 0; player < 2; player++)
+            {
+                Snapshot counts = _hookCounts[player];
+                if (counts == null || counts.Track != track || counts.TotalJudgements == 0)
+                {
+                    continue;
+                }
+
+                sampled = true;
+                try
+                {
+                    GameScoreList score = GamePlayManager.Instance.GetGameScore(player, -1);
+                    if (score == null || !score.IsEnable)
+                    {
+                        continue;
+                    }
+
+                    counts.DxScore = score.DxScore;
+                    counts.Achievement = score.GetAchivement();
+                    decimal progress;
+                    uint elapsedSeconds;
+                    uint durationSeconds;
+                    if (TryReadGameplayTime(
+                        player, out progress, out elapsedSeconds, out durationSeconds))
+                    {
+                        counts.Progress = progress;
+                        counts.ElapsedSeconds = elapsedSeconds;
+                        counts.DurationSeconds = durationSeconds;
+                    }
+                    _last[player] = counts;
+                    _judgePublishPending[player] = true;
+                }
+                catch (Exception ex)
+                {
+                    if (!_gameplayMetricsWarningLogged)
+                    {
+                        _gameplayMetricsWarningLogged = true;
+                        MelonLogger.Warning("XiaoLanMaiBrdge gameplay metrics unavailable: " + ex.Message);
+                    }
+                }
+            }
+
+            if (sampled)
+            {
+                _lastGameplayMetricsCapture = now;
+            }
+        }
+
+        private bool TryReadGameplayTime(
+            int player,
+            out decimal progress,
+            out uint elapsedSeconds,
+            out uint durationSeconds)
+        {
+            progress = 0m;
+            elapsedSeconds = 0;
+            durationSeconds = 0;
+            if (!_gameplayTimeResolved)
+            {
+                System.Type notesManagerType = AccessTools.TypeByName("Manager.NotesManager");
+                if (notesManagerType != null)
+                {
+                    _notesManagerInstanceMethod = notesManagerType.GetMethod(
+                        "Instance",
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static,
+                        null,
+                        new System.Type[] { typeof(int) },
+                        null);
+                    _notesCurrentMsecMethod = FindMethod(notesManagerType, "GetCurrentMsec", true);
+                    _notesPlayFirstMsecMethod = FindMethod(notesManagerType, "getPlayFirstMsec", false);
+                    _notesPlayFinalMsecMethod = FindMethod(notesManagerType, "getPlayFinalMsec", false);
+                }
+                _gameplayTimeResolved = true;
+            }
+
+            if (_notesManagerInstanceMethod == null || _notesCurrentMsecMethod == null ||
+                _notesPlayFirstMsecMethod == null || _notesPlayFinalMsecMethod == null)
+            {
+                return false;
+            }
+
+            object notesManager = _notesManagerInstanceMethod.Invoke(null, new object[] { player });
+            if (notesManager == null)
+            {
+                return false;
+            }
+
+            decimal currentMsec = ToDecimal(_notesCurrentMsecMethod.Invoke(null, null));
+            decimal firstMsec = ToDecimal(_notesPlayFirstMsecMethod.Invoke(notesManager, null));
+            decimal finalMsec = ToDecimal(_notesPlayFinalMsecMethod.Invoke(notesManager, null));
+            decimal durationMsec = finalMsec - firstMsec;
+            if (durationMsec <= 0m)
+            {
+                return false;
+            }
+
+            decimal elapsedMsec = currentMsec - firstMsec;
+            if (elapsedMsec < 0m)
+            {
+                elapsedMsec = 0m;
+            }
+            else if (elapsedMsec > durationMsec)
+            {
+                elapsedMsec = durationMsec;
+            }
+
+            progress = elapsedMsec / durationMsec;
+            elapsedSeconds = (uint)Math.Floor((double)(elapsedMsec / 1000m));
+            durationSeconds = (uint)Math.Ceiling((double)(durationMsec / 1000m));
+            return true;
+        }
+
         private static void JudgeResultPostfix(
             int monitorIndex,
             NoteScore.EScoreType type,
@@ -1208,13 +1596,21 @@ namespace MaiDGBridge
             {
                 counts = new Snapshot { Player = monitorIndex + 1, Track = track };
                 _hookCounts[monitorIndex] = counts;
-                ApplyMetadata(counts, monitorIndex);
+                Snapshot previous = _last[monitorIndex];
+                if (_selectedMetadata != null)
+                {
+                    CopyMetadata(_selectedMetadata, counts);
+                }
+                else if (previous != null && previous.Track == track)
+                {
+                    CopyMetadata(previous, counts);
+                }
+                else
+                {
+                    ApplyMetadata(counts, monitorIndex);
+                }
+                ApplyIdentity(counts);
             }
-            else if (_last[monitorIndex] != null)
-            {
-                CopyMetadata(_last[monitorIndex], counts);
-            }
-            ApplyIdentity(counts);
 
             switch (NoteJudge.ConvertJudge(timing))
             {
@@ -1245,42 +1641,10 @@ namespace MaiDGBridge
             if (!_judgeHookObserved)
             {
                 _judgeHookObserved = true;
-                MelonLogger.Msg("MaiDGBridge received its first live judgement");
+                MelonLogger.Msg("XiaoLanMaiBrdge received its first live judgement");
             }
-            _server.PublishJson(counts.ToJson("counts", "PLAYING"));
-        }
-
-        private Snapshot Capture(int player, bool refreshMetadata)
-        {
-            GameScoreList score = GamePlayManager.Instance.GetGameScore(player, -1);
-            if (score == null || !score.IsEnable)
-            {
-                return null;
-            }
-
-            Snapshot snapshot = new Snapshot
-            {
-                Player = player + 1,
-                Track = GameManager.MusicTrackNumber,
-                Critical = score.CriticalNum,
-                Perfect = score.PerfectNum,
-                Great = score.GreatNum,
-                Good = score.GoodNum,
-                Miss = score.MissNum,
-                Combo = score.Combo,
-                DxScore = score.DxScore,
-                Achievement = score.GetAchivement()
-            };
-            if (refreshMetadata || _last[player] == null || _last[player].Track != snapshot.Track)
-            {
-                ApplyMetadata(snapshot, player);
-            }
-            else
-            {
-                CopyMetadata(_last[player], snapshot);
-            }
-            ApplyIdentity(snapshot);
-            return snapshot;
+            _last[monitorIndex] = counts;
+            _judgePublishPending[monitorIndex] = true;
         }
 
         private void ApplyIdentity(Snapshot snapshot)
@@ -1310,6 +1674,8 @@ namespace MaiDGBridge
             target.Level = source.Level;
             target.Constant = source.Constant;
             target.Progress = source.Progress;
+            target.ElapsedSeconds = source.ElapsedSeconds;
+            target.DurationSeconds = source.DurationSeconds;
         }
 
         private void ApplyMetadata(Snapshot snapshot, int player)
@@ -1349,20 +1715,6 @@ namespace MaiDGBridge
                 snapshot.Difficulty = ToInt(ReadMember(session, "difficulty"));
                 snapshot.Chart = DifficultyName(snapshot.Difficulty);
 
-                MethodInfo progressMethod = FindMethod(notesManagerType, "getPlayProgress", false);
-                if (progressMethod != null)
-                {
-                    snapshot.Progress = ToDecimal(progressMethod.Invoke(notesManager, null));
-                    if (snapshot.Progress < 0m)
-                    {
-                        snapshot.Progress = 0m;
-                    }
-                    else if (snapshot.Progress > 1m)
-                    {
-                        snapshot.Progress = 1m;
-                    }
-                }
-
                 object notes = ReadMember(session, "notesData");
                 System.Type dataManagerType = AccessTools.TypeByName("Manager.DataManager");
                 object dataManager = ReadStaticMember(dataManagerType, "Instance");
@@ -1380,6 +1732,11 @@ namespace MaiDGBridge
                     snapshot.Title = ReadStringId(music, "name");
                     snapshot.Composer = ReadStringId(music, "artistName");
                     snapshot.Artist = snapshot.Composer;
+                    if (IsUtageMusic(music, snapshot.MusicId))
+                    {
+                        snapshot.Difficulty = 5;
+                        snapshot.Chart = UtageChartName(music);
+                    }
                 }
 
                 if (notes != null)
@@ -1409,7 +1766,7 @@ namespace MaiDGBridge
                     Exception detail = ex is TargetInvocationException && ex.InnerException != null
                         ? ex.InnerException
                         : ex;
-                    MelonLogger.Warning("MaiDGBridge metadata unavailable: " + detail.Message);
+                    MelonLogger.Warning("XiaoLanMaiBrdge metadata unavailable: " + detail.Message);
                 }
             }
         }
@@ -1507,8 +1864,40 @@ namespace MaiDGBridge
         private static string ReadStringId(object target, string name)
         {
             object stringId = ReadMember(target, name);
-            string value = ToText(ReadMember(stringId, "str"));
-            return string.IsNullOrEmpty(value) ? ToText(stringId) : value;
+            if (stringId == null)
+            {
+                return string.Empty;
+            }
+            object rawValue = ReadMember(stringId, "str");
+            if (rawValue != null)
+            {
+                return ToText(rawValue);
+            }
+            return stringId is string ? ToText(stringId) : string.Empty;
+        }
+
+        private static bool IsUtageMusic(object music, int musicId)
+        {
+            if (music == null)
+            {
+                return false;
+            }
+            object genre = ReadMember(music, "genreName");
+            int genreId = ToInt(ReadMember(genre, "id"));
+            string genreName = ToText(ReadMember(genre, "str"));
+            if (genreId == 107 || genreName.Contains("宴会场") || genreName.Contains("宴會場"))
+            {
+                return true;
+            }
+            return musicId >= 100000 &&
+                   (!string.IsNullOrEmpty(ToText(ReadMember(music, "utageKanjiName"))) ||
+                    ReadStringId(music, "name").StartsWith("[", StringComparison.Ordinal));
+        }
+
+        private static string UtageChartName(object music)
+        {
+            string kanji = ToText(ReadMember(music, "utageKanjiName")).Trim();
+            return string.IsNullOrEmpty(kanji) ? "UTAGE" : "UTAGE " + kanji;
         }
 
         private static int ToInt(object value)
@@ -1582,6 +1971,12 @@ namespace MaiDGBridge
         public string Composer = string.Empty;
         public string Level = string.Empty;
         public decimal Constant;
+        public int GameDifficultyId = -1;
+        public int CurrentDifficultyId = -1;
+        public int SelectDifficultyIndex = -1;
+        public int CardDifficultyId = -1;
+        public bool IsLevelTab;
+        public bool IsExtraFolder;
 
         public bool SameValues(PresenceSnapshot other)
         {
@@ -1599,7 +1994,13 @@ namespace MaiDGBridge
                    Author == other.Author &&
                    Composer == other.Composer &&
                    Level == other.Level &&
-                   Constant == other.Constant;
+                   Constant == other.Constant &&
+                   GameDifficultyId == other.GameDifficultyId &&
+                   CurrentDifficultyId == other.CurrentDifficultyId &&
+                   SelectDifficultyIndex == other.SelectDifficultyIndex &&
+                   CardDifficultyId == other.CardDifficultyId &&
+                   IsLevelTab == other.IsLevelTab &&
+                   IsExtraFolder == other.IsExtraFolder;
         }
 
         public string ToJson()
@@ -1610,12 +2011,17 @@ namespace MaiDGBridge
                 "\"remaining\":{3},\"timer_infinite\":{4},\"music_id\":{5}," +
                 "\"difficulty_id\":{6},\"difficulty\":\"{7}\",\"title\":\"{8}\"," +
                 "\"artist\":\"{9}\",\"author\":\"{10}\",\"composer\":\"{11}\"," +
-                "\"level\":\"{12}\",\"constant\":{13:0.0}}}",
+                "\"level\":\"{12}\",\"constant\":{13:0.0}," +
+                "\"debug_game_difficulty\":{14},\"debug_current_difficulty\":{15}," +
+                "\"debug_select_index\":{16},\"debug_card_difficulty\":{17}," +
+                "\"debug_level_tab\":{18},\"debug_extra_folder\":{19}}}",
                 Snapshot.JsonEscape(Status), Snapshot.JsonEscape(Version), Snapshot.JsonEscape(UserName),
                 Remaining, TimerInfinite ? "true" : "false", MusicId, DifficultyId,
                 Snapshot.JsonEscape(Difficulty), Snapshot.JsonEscape(Title),
                 Snapshot.JsonEscape(Artist), Snapshot.JsonEscape(Author),
-                Snapshot.JsonEscape(Composer), Snapshot.JsonEscape(Level), Constant);
+                Snapshot.JsonEscape(Composer), Snapshot.JsonEscape(Level), Constant,
+                GameDifficultyId, CurrentDifficultyId, SelectDifficultyIndex, CardDifficultyId,
+                IsLevelTab ? "true" : "false", IsExtraFolder ? "true" : "false");
         }
     }
 
@@ -1643,6 +2049,8 @@ namespace MaiDGBridge
         public string Level = string.Empty;
         public decimal Constant;
         public decimal Progress;
+        public uint ElapsedSeconds;
+        public uint DurationSeconds;
 
         public uint TotalJudgements
         {
@@ -1661,6 +2069,7 @@ namespace MaiDGBridge
                    Miss == other.Miss &&
                    Combo == other.Combo &&
                    DxScore == other.DxScore &&
+                   Achievement == other.Achievement &&
                    MusicId == other.MusicId &&
                    Difficulty == other.Difficulty &&
                    Version == other.Version &&
@@ -1671,7 +2080,10 @@ namespace MaiDGBridge
                    Composer == other.Composer &&
                    Chart == other.Chart &&
                    Level == other.Level &&
-                   Constant == other.Constant;
+                   Constant == other.Constant &&
+                   Progress == other.Progress &&
+                   ElapsedSeconds == other.ElapsedSeconds &&
+                   DurationSeconds == other.DurationSeconds;
         }
 
         public string ToJson(string eventName, string status)
@@ -1683,12 +2095,13 @@ namespace MaiDGBridge
                 "\"combo\":{9},\"dx_score\":{10},\"achievement\":{11:0.0000}," +
                 "\"music_id\":{12},\"difficulty_id\":{13},\"version\":\"{14}\",\"user_name\":\"{15}\",\"title\":\"{16}\"," +
                 "\"artist\":\"{17}\",\"author\":\"{18}\",\"composer\":\"{19}\",\"chart\":\"{20}\",\"level\":\"{21}\"," +
-                "\"constant\":{22:0.0},\"progress\":{23:0.0000}}}",
+                "\"constant\":{22:0.0},\"progress\":{23:0.0000}," +
+                "\"elapsed_seconds\":{24},\"duration_seconds\":{25}}}",
                 eventName, status, Player, Track, Critical, Perfect, Great, Good, Miss,
                 Combo, DxScore, Achievement, MusicId, Difficulty, JsonEscape(Version),
                 JsonEscape(UserName), JsonEscape(Title), JsonEscape(Artist),
                 JsonEscape(Author), JsonEscape(Composer), JsonEscape(Chart),
-                JsonEscape(Level), Constant, Progress);
+                JsonEscape(Level), Constant, Progress, ElapsedSeconds, DurationSeconds);
         }
 
         internal static string JsonEscape(string value)
@@ -1731,7 +2144,7 @@ namespace MaiDGBridge
         public bool Enabled = true;
         public int Port = 8891;
         public int PublishIntervalMs = 250;
-        public int PresenceIntervalMs = 1000;
+        public int PresenceIntervalMs = 250;
 
         public static BridgeConfig Load(string path)
         {
@@ -1832,12 +2245,12 @@ namespace MaiDGBridge
 
             _acceptThread = new Thread(AcceptLoop);
             _acceptThread.IsBackground = true;
-            _acceptThread.Name = "MaiDGBridge-Accept";
+            _acceptThread.Name = "XiaoLanMaiBrdge-Accept";
             _acceptThread.Start();
 
             _sendThread = new Thread(SendLoop);
             _sendThread.IsBackground = true;
-            _sendThread.Name = "MaiDGBridge-Send";
+            _sendThread.Name = "XiaoLanMaiBrdge-Send";
             _sendThread.Start();
         }
 

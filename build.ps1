@@ -18,7 +18,7 @@ $stage = Join-Path $dist "standalone-stage"
 $payload = Join-Path $stage "payload"
 $pyWork = Join-Path $dist "pyinstaller-work"
 $pySpec = Join-Path $dist "pyinstaller-spec"
-$bridgeDll = Join-Path $payload "MaiDGBridge.dll"
+$bridgeDll = Join-Path $payload "XiaoLanMaiBrdge.dll"
 
 if (-not $dist.StartsWith(([IO.Path]::GetFullPath($root) + [IO.Path]::DirectorySeparatorChar), [StringComparison]::OrdinalIgnoreCase)) {
     throw "Refusing to use a dist path outside the project: $dist"
@@ -34,10 +34,10 @@ New-Item -ItemType Directory -Force -Path $payload, $pyWork, $pySpec | Out-Null
     /reference:$melonLoader `
     /reference:$harmony `
     /reference:$assemblyCSharp `
-    (Join-Path $root "bridge\MaiDGBridge.cs")
+    (Join-Path $root "bridge\XiaoLanMaiBrdge.cs")
 if ($LASTEXITCODE -ne 0) { throw "C# compilation failed" }
 
-Copy-Item -LiteralPath (Join-Path $root "bridge\MaiDGBridge.ini") -Destination $payload
+Copy-Item -LiteralPath (Join-Path $root "bridge\XiaoLanMaiBrdge.ini") -Destination $payload
 $bridgeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $bridgeDll).Hash.ToLowerInvariant()
 $descriptor = [ordered]@{
     plugin_version = $appVersion

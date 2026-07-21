@@ -4,6 +4,8 @@ dist/
 release-stage-*/
 source-stage-*/
 verify-stage-*/
+backups/
+tests/*.exe
 
 # Local test dependencies and caches
 testdeps/

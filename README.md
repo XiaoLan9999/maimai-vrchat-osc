@@ -3,7 +3,7 @@
 **English** | [简体中文](README.zh-CN.md)
 
 This is a standalone Windows application with no DGHub runtime dependency. It
-reads the local SSE stream exposed by `MaiDGBridge` and continuously publishes
+reads the local SSE stream exposed by `XiaoLanMaiBrdge` and continuously publishes
 menu, song-select, playing, and result cards to the VRChat Chatbox.
 
 It can run alongside the full
@@ -14,7 +14,7 @@ Chatbox sender to disable.
 
 ## Installation
 
-1. Extract `maimai-vrchat-osc-2.1.1-win64.zip`.
+1. Extract `maimai-vrchat-osc-2.1.7-win64.zip`.
 2. Run `MaimaiVrchatOsc.exe`.
 3. Select the game `Package` directory containing `Sinmai.exe`.
 4. Set the IPv4 address of the VRChat computer. Use `127.0.0.1` on the same
@@ -34,6 +34,9 @@ VRChat target, player, update and keepalive intervals, retry count,
 Artist/judgement/result fields, version visibility, notification sound, and
 automatic startup. Its author link opens
 [XiaoLan9999.net](https://XiaoLan9999.net). Configuration is stored at:
+
+The OSC update interval has a hard minimum of one second. Faster game-state
+changes are coalesced and only the newest card is sent when the interval opens.
 
 ```text
 %LOCALAPPDATA%\MaimaiVrchatOsc\config.json
@@ -84,14 +87,15 @@ Song select:
 ```text
 『舞萌DX』 User Name
 42s 正在选歌：
-Song Name MASTER
+Song Name 【MASTER大师】
 难度：14  定数：14.0
 作者：Chart Author  曲师：Composer
 版本号 Ver.CN1.56-B
 ```
 
-Playing cards include song/chart metadata, progress, achievement, DX score,
-combo, and MISS when available. The result card remains active for the full
+Playing cards include song/chart metadata, elapsed/total song time, achievement, DX score,
+combo, and MISS when available. Chinese locales show English and translated chart
+names together. Result cards omit the completed song time. The result card remains active for the full
 result-process lifetime and changes only after entering menu or song select.
 The current card is force-sent every 5 seconds by default to recover from
 temporary UDP loss. After login, the user name remains in the header and the
@@ -102,9 +106,11 @@ all keepalive traffic. It resumes automatically when cabinet activity returns.
 
 ## Bridge coexistence
 
-The application bundles `MaiDGBridge 1.4.6`. Installation verifies SHA-256,
-backs up replaced files under `Package/MaiDGBridge.backups/<timestamp>`, and
-never replaces a DLL while the game is running. A same-version bridge installed
+The application bundles `XiaoLanMaiBrdge 1.4.12`. Installation verifies SHA-256,
+backs up replaced files under `Package/XiaoLanMaiBrdge.backups/<timestamp>`, and
+never replaces a DLL while the game is running. Upgrades detect and back up the
+legacy `MaiDGBridge.dll`, configuration, and marker before removing the legacy
+files, so only `XiaoLanMaiBrdge.dll` is loaded. A same-version bridge installed
 by DGHub is accepted by version and its recorded hash, preventing replacement
 loops between the two applications.
 
@@ -122,11 +128,11 @@ Outputs:
 
 ```text
 dist\standalone-stage\MaimaiVrchatOsc.exe
-dist\maimai-vrchat-osc-2.1.1-win64.zip
+dist\maimai-vrchat-osc-2.1.7-win64.zip
 ```
 
 The legacy DGHub-only build remains available as `build-dghub-plugin.ps1` and
-in tags up to `v1.4.1`.
+in tags up to `v1.4.3`.
 
 ## License
 

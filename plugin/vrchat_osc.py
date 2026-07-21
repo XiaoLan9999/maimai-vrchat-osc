@@ -10,6 +10,7 @@ import time
 CHATBOX_ADDRESS = "/chatbox/input"
 MAX_CHATBOX_CHARS = 144
 MAX_CHATBOX_LINES = 9
+MIN_CHATBOX_INTERVAL = 1.0
 
 
 def _osc_string(value):
@@ -65,6 +66,18 @@ def _number(value, digits=None):
     return ("{0:." + str(digits) + "f}").format(number)
 
 
+def _song_time(value):
+    try:
+        seconds = max(0, int(float(value)))
+    except (TypeError, ValueError):
+        seconds = 0
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return "{0}:{1:02d}:{2:02d}".format(hours, minutes, seconds)
+    return "{0}:{1:02d}".format(minutes, seconds)
+
+
 def _song_line(event, fallback):
     title = str(event.get("title") or "").strip()
     if title:
@@ -73,7 +86,7 @@ def _song_line(event, fallback):
     return "♪ {0} · TRACK {1}".format(fallback, _number(track))
 
 
-def _chart_line(event):
+def _chart_line(event, include_time=True):
     parts = []
     chart = str(event.get("chart") or event.get("difficulty") or "").strip()
     level = str(event.get("level") or "").strip()
@@ -91,11 +104,16 @@ def _chart_line(event):
     if track is not None:
         parts.append("TRACK " + _number(track))
     try:
-        progress = float(event.get("progress"))
+        elapsed_seconds = max(0, int(float(event.get("elapsed_seconds"))))
+        duration_seconds = max(0, int(float(event.get("duration_seconds"))))
     except (TypeError, ValueError):
-        progress = -1.0
-    if math.isfinite(progress) and 0.0 <= progress <= 1.0:
-        parts.append("{0}%".format(int(progress * 100.0)))
+        elapsed_seconds = 0
+        duration_seconds = 0
+    if include_time and duration_seconds > 0:
+        parts.append("时间 {0} / {1}".format(
+            _song_time(min(elapsed_seconds, duration_seconds)),
+            _song_time(duration_seconds),
+        ))
     return " · ".join(parts)
 
 
@@ -169,7 +187,7 @@ def format_result(event, show_artist=True, show_judgements=True):
     artist = str(event.get("artist") or "").strip()
     if not show_artist:
         artist = ""
-    chart = _chart_line(event)
+    chart = _chart_line(event, include_time=False)
     score = "RESULT {0}% · DX {1}".format(
         _number(event.get("achievement"), 4)[:12],
         _number(event.get("dx_score"))[:12],
@@ -193,12 +211,17 @@ class OscChatboxPublisher:
         self._socket = None
         self._last_text = None
         self._last_sent = 0.0
+        self._pending_text = None
+        self._pending_force = False
+        self._clock = time.monotonic
 
     def configure(self, enabled, host, port, interval, notification=False):
         if not bool(enabled):
             self.enabled = False
             self._last_text = None
             self._last_sent = 0.0
+            self._pending_text = None
+            self._pending_force = False
             self.close()
             return
 
@@ -227,24 +250,59 @@ class OscChatboxPublisher:
         self.enabled = bool(enabled)
         self.host = host
         self.port = port
-        self.interval = interval
+        self.interval = max(MIN_CHATBOX_INTERVAL, interval)
         self.notification = bool(notification)
         if changed:
             self._last_text = None
             self._last_sent = 0.0
+            self._pending_text = None
+            self._pending_force = False
 
     def publish(self, text, force=False):
         if not self.enabled:
             return False
 
         text = sanitize_chatbox_text(text)
-        now = time.monotonic()
+        now = self._clock()
         elapsed = now - self._last_sent
-        if not force and elapsed < self.interval:
+        required_interval = MIN_CHATBOX_INTERVAL if force else self.interval
+        if elapsed < required_interval:
+            self._pending_text = text
+            self._pending_force = bool(force)
             return False
         if not force and text == self._last_text and elapsed < max(5.0, self.interval * 3.0):
+            self._pending_text = None
+            self._pending_force = False
             return False
 
+        return self._send(text, now)
+
+    def flush(self, wait=False):
+        if not self.enabled or self._pending_text is None:
+            return False
+
+        now = self._clock()
+        elapsed = now - self._last_sent
+        text = self._pending_text
+        force = self._pending_force
+        required_interval = MIN_CHATBOX_INTERVAL if force else self.interval
+        remaining = required_interval - elapsed
+        if remaining > 0.0:
+            if not wait:
+                return False
+            time.sleep(remaining)
+            now = self._clock()
+            elapsed = now - self._last_sent
+            if elapsed < required_interval:
+                return False
+
+        if not force and text == self._last_text and elapsed < max(5.0, self.interval * 3.0):
+            self._pending_text = None
+            self._pending_force = False
+            return False
+        return self._send(text, now)
+
+    def _send(self, text, now):
         if self._socket is None:
             self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         packet = encode_osc_message(
@@ -254,9 +312,13 @@ class OscChatboxPublisher:
         self._socket.sendto(packet, (self.host, self.port))
         self._last_text = text
         self._last_sent = now
+        self._pending_text = None
+        self._pending_force = False
         return True
 
     def close(self):
+        self._pending_text = None
+        self._pending_force = False
         if self._socket is not None:
             self._socket.close()
             self._socket = None

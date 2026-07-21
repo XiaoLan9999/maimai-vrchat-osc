@@ -42,21 +42,22 @@ async def main():
         )
         await writer.drain()
 
-        async def event(payload):
+        async def event(payload, delay=0.15):
             writer.write(b"data: " + json.dumps(payload).encode("utf-8") + b"\r\n\r\n")
             await writer.drain()
-            await asyncio.sleep(0.15)
+            await asyncio.sleep(delay)
 
-        await event({"event": "presence", "status": "MENU", "version": "Ver.CN1.56-B"})
+        await event({"event": "presence", "status": "MENU", "version": "Ver.CN1.56-B"}, 1.05)
         await event({
             "event": "presence", "status": "SELECTING", "remaining": 42,
             "title": "Test Song", "difficulty": "MASTER",
-        })
+        }, 1.05)
         await event({"event": "state", "status": "PLAYING"})
         await event({
             "event": "counts", "status": "PLAYING", "player": 1,
             "title": "Test Song", "achievement": 97.5, "miss": 1,
-        })
+            "elapsed_seconds": 60, "duration_seconds": 120,
+        }, 1.05)
         await event({
             "event": "settle", "status": "RESULT", "player": 1,
             "title": "Test Song", "achievement": 95.1234, "miss": 1,
@@ -81,14 +82,14 @@ async def main():
         "auto_install_bridge": False,
         "osc_host": "127.0.0.1",
         "osc_port": osc_port,
-        "osc_update_interval": 0.5,
+        "osc_update_interval": 1.0,
         "osc_keepalive_interval": 2.0,
     })
     status = queue.Queue()
     service = StandaloneService(str(ROOT / "app"), status)
     service.start(normalize_config(config))
     await asyncio.wait_for(source_done.wait(), timeout=5)
-    await asyncio.sleep(2.4)
+    await asyncio.sleep(3.0)
     await asyncio.to_thread(service.stop)
 
     packets = []
@@ -112,7 +113,8 @@ async def main():
     assert any("版本号 Ver.CN1.56-B" in text for text in packets), packets
     assert any("42s 正在选歌" in text for text in packets), packets
     assert any("ACH 97.5000%" in text for text in packets), packets
-    results = [text for text in packets if "结算 95.1234%" in text]
+    assert any("时间 1:00 / 2:00" in text for text in packets), packets
+    results = [text for text in packets if "结算：达成率 95.1234%" in text]
     assert len(results) >= 2, packets
     print("standalone integration ok: SSE, cards, result screen, UDP keepalive")
 

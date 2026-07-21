@@ -46,7 +46,7 @@ async def main():
         "auto_install_bridge": False,
         "osc_host": "127.0.0.1",
         "osc_port": osc_port,
-        "osc_update_interval": 0.5,
+        "osc_update_interval": 1.0,
         "osc_keepalive_interval": 2.0,
         "activity_retry_limit": 2,
     })

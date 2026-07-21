@@ -3,6 +3,7 @@
 import queue
 import threading
 import time
+import unicodedata
 
 from bridge_installer import ensure_bridge_installed
 from i18n import tr
@@ -88,7 +89,8 @@ class CardState:
 
     @staticmethod
     def _is_guest_name(value):
-        return not str(value or "").strip() or str(value).strip() == "游客"
+        name = unicodedata.normalize("NFKC", str(value or "")).strip()
+        return not name or name.casefold() in {"游客", "guest", "ゲスト"}
 
     @staticmethod
     def _number(value):
@@ -103,6 +105,7 @@ class CardState:
         progress = self._number(event.get("progress"))
         return (
             0.0 < progress < 0.999
+            or self._number(event.get("duration_seconds")) > 0
             or self._number(event.get("achievement")) > 0
             or self._number(event.get("dx_score")) > 0
             or self._number(event.get("miss")) > 0
@@ -347,6 +350,7 @@ class StandaloneService:
                     entered_suspended = activity.failed()
                     if entered_suspended:
                         osc.publish("", force=True)
+                        osc.flush(wait=True)
                         osc.close()
                         osc_active = False
                         cards.reset_starting()
@@ -419,6 +423,9 @@ class StandaloneService:
                             card_kind=publication["kind"],
                             detail=publication["kind"],
                         )
+
+                if osc_active and osc.flush():
+                    last_sent = time.monotonic()
 
                 if (
                     osc_active
