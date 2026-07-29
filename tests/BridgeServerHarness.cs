@@ -266,15 +266,44 @@ internal static class BridgeServerHarness
         public FakeStringId notesDesigner = new FakeStringId(0, string.Empty);
     }
 
+    private sealed class FakeNotes
+    {
+        public int level;
+        public int levelDecimal;
+        public int musicLevelID;
+        public FakeStringId notesDesigner = new FakeStringId(0, string.Empty);
+
+        public FakeNotes(int value, int decimalValue, int levelId)
+        {
+            level = value;
+            levelDecimal = decimalValue;
+            musicLevelID = levelId;
+        }
+    }
+
+    private sealed class FakeDifficultyMusic
+    {
+        public object[] notesData = {
+            new FakeNotes(4, 0, 4),
+            new FakeNotes(7, 0, 7),
+            new FakeNotes(10, 0, 10),
+            new FakeNotes(13, 7, 14),
+            new FakeNotes(0, 0, 0),
+        };
+    }
+
     private sealed class FakeResultScore
     {
+        public bool IsEnable = true;
         public uint CriticalNum = 1;
         public uint PerfectNum = 2;
         public uint GreatNum = 3;
         public uint GoodNum = 4;
         public uint MissNum = 5;
         public uint Combo = 2;
+        public uint MaxCombo = 12;
         public uint DxScore = 123;
+        public uint MusicRate = 5;
 
         public decimal GetAchivement()
         {
@@ -282,9 +311,40 @@ internal static class BridgeServerHarness
         }
     }
 
+    private sealed class FakeStoredUserScore
+    {
+        public uint achivement;
+        public uint deluxscore;
+        public int scoreRank;
+
+        public FakeStoredUserScore(uint achievementValue, uint dxScoreValue, int rankValue = -1)
+        {
+            achivement = achievementValue;
+            deluxscore = dxScoreValue;
+            scoreRank = rankValue;
+        }
+    }
+
     private sealed class FakeResultProcess
     {
-        private readonly FakeResultScore[] _gameScoreLists = { new FakeResultScore(), null };
+        private readonly FakeResultScore[] _gameScoreLists = {
+            new FakeResultScore(),
+            new FakeResultScore { IsEnable = false },
+        };
+        private readonly FakeStoredUserScore[] _userScores = {
+            new FakeStoredUserScore(0, 0, 5),
+            new FakeStoredUserScore(876543, 321, 5),
+        };
+        private readonly int _musicID = 24680;
+    }
+
+    private sealed class FakeStoredResultProcess
+    {
+        private readonly object[] _gameScoreLists = { null, null };
+        private readonly FakeStoredUserScore[] _userScores = {
+            new FakeStoredUserScore(0, 0),
+            new FakeStoredUserScore(876543, 321),
+        };
         private readonly int _musicID = 24680;
     }
 
@@ -354,6 +414,15 @@ internal static class BridgeServerHarness
         {
             throw new Exception("utage metadata detection failed");
         }
+        System.Reflection.MethodInfo resolveExistingDifficulty = typeof(MaiDGBridge.BridgeMod).GetMethod(
+            "ResolveExistingDifficulty",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        int resolvedExistingDifficulty = (int)resolveExistingDifficulty.Invoke(
+            null, new object[] { null, new FakeDifficultyMusic(), 4 });
+        if (resolvedExistingDifficulty != 3)
+        {
+            throw new Exception("missing Re:MASTER chart did not fall back to MASTER");
+        }
 
         System.Reflection.MethodInfo captureResult = typeof(MaiDGBridge.BridgeMod).GetMethod(
             "CaptureResult",
@@ -362,9 +431,33 @@ internal static class BridgeServerHarness
             new MaiDGBridge.BridgeMod(), new object[] { new FakeResultProcess(), 0 });
         if (result == null || result.MusicId != 24680 || result.Critical != 1 ||
             result.Perfect != 2 || result.Great != 3 || result.Good != 4 || result.Miss != 5 ||
-            result.Achievement != 87.6543m || !result.ToJson("settle", "RESULT").Contains("\"event\":\"settle\""))
+            result.Combo != 12 || result.DxScore != 123 || result.Achievement != 87.6543m ||
+            result.Rank != "A" ||
+            !result.ToJson("settle", "RESULT").Contains("\"rank\":\"A\""))
         {
             throw new Exception("result snapshot capture failed");
+        }
+        MaiDGBridge.Snapshot storedResult = (MaiDGBridge.Snapshot)captureResult.Invoke(
+            new MaiDGBridge.BridgeMod(), new object[] { new FakeStoredResultProcess(), 1 });
+        if (storedResult == null || storedResult.Achievement != 87.6543m ||
+            storedResult.DxScore != 321 || storedResult.Rank != "A")
+        {
+            throw new Exception("stored result score scaling failed");
+        }
+        System.Reflection.MethodInfo rankFromAchievement = typeof(MaiDGBridge.BridgeMod).GetMethod(
+            "RankFromAchievement",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        if ((string)rankFromAchievement.Invoke(null, new object[] { 100.5m }) != "SSS+" ||
+            (string)rankFromAchievement.Invoke(null, new object[] { 100.0m }) != "SSS" ||
+            (string)rankFromAchievement.Invoke(null, new object[] { 49.9999m }) != "D")
+        {
+            throw new Exception("achievement rank fallback failed");
+        }
+        MaiDGBridge.Snapshot disabledResult = (MaiDGBridge.Snapshot)captureResult.Invoke(
+            new MaiDGBridge.BridgeMod(), new object[] { new FakeResultProcess(), 1 });
+        if (disabledResult != null)
+        {
+            throw new Exception("disabled player emitted a zero result");
         }
 
         System.Reflection.FieldInfo sessionStarted = typeof(MaiDGBridge.BridgeMod).GetField(

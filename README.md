@@ -14,7 +14,7 @@ Chatbox sender to disable.
 
 ## Installation
 
-1. Extract `maimai-vrchat-osc-2.1.7-win64.zip`.
+1. Extract `maimai-vrchat-osc-2.1.9-win64.zip`.
 2. Run `MaimaiVrchatOsc.exe`.
 3. Select the game `Package` directory containing `Sinmai.exe`.
 4. Set the IPv4 address of the VRChat computer. Use `127.0.0.1` on the same
@@ -95,7 +95,7 @@ Song Name 【MASTER大师】
 
 Playing cards include song/chart metadata, elapsed/total song time, achievement, DX score,
 combo, and MISS when available. Chinese locales show English and translated chart
-names together. Result cards omit the completed song time. The result card remains active for the full
+names together. Result cards include the final grade such as `SSS+` and omit the completed song time. The result card remains active for the full
 result-process lifetime and changes only after entering menu or song select.
 The current card is force-sent every 5 seconds by default to recover from
 temporary UDP loss. After login, the user name remains in the header and the
@@ -106,7 +106,7 @@ all keepalive traffic. It resumes automatically when cabinet activity returns.
 
 ## Bridge coexistence
 
-The application bundles `XiaoLanMaiBrdge 1.4.12`. Installation verifies SHA-256,
+The application bundles `XiaoLanMaiBrdge 1.4.14`. Installation verifies SHA-256,
 backs up replaced files under `Package/XiaoLanMaiBrdge.backups/<timestamp>`, and
 never replaces a DLL while the game is running. Upgrades detect and back up the
 legacy `MaiDGBridge.dll`, configuration, and marker before removing the legacy
@@ -128,7 +128,7 @@ Outputs:
 
 ```text
 dist\standalone-stage\MaimaiVrchatOsc.exe
-dist\maimai-vrchat-osc-2.1.7-win64.zip
+dist\maimai-vrchat-osc-2.1.9-win64.zip
 ```
 
 The legacy DGHub-only build remains available as `build-dghub-plugin.ps1` and

@@ -184,14 +184,23 @@ def test_card_state():
     assert "ACH 97.5000%" in playing["text"]
     assert "『舞萌DX』 小蓝" in playing["text"]
     assert "版本号 Ver.CN1.56-B" in playing["text"]
+    assert cards.handle({
+        "event": "settle",
+        "status": "RESULT",
+        "player": 2,
+        "title": "Inactive Player",
+        "achievement": 0,
+        "dx_score": 0,
+    }, 3.9) is None
     result = cards.handle({
         "event": "settle",
         "status": "RESULT",
         "player": 1,
         "title": "Test Song",
         "achievement": 95.1234,
+        "rank": "AAA",
     }, 4.0)
-    assert "结算：达成率 95.1234%" in result["text"]
+    assert "成绩：AAA · 达成率 95.1234%" in result["text"]
     assert "『舞萌DX』 小蓝" in result["text"]
     assert "版本号 Ver.CN1.56-B" in result["text"]
     assert cards.handle({"event": "presence", "status": "MENU", "version": "x"}, 5.0) is None
@@ -270,7 +279,15 @@ def test_languages_and_version_toggle():
     assert "【MASTER大师】" in result
     assert "TRACK 3" in result
     assert "时间" not in result and "100%" not in result
-    assert "结算：达成率 0.0000% · DX分 0" in result
+    assert "成绩：D · 达成率 0.0000% · DX分 0" in result
+
+    plus_result = format_result({
+        "title": "Perfect Test",
+        "rank": "Rank_SSSP",
+        "achievement": 100.5,
+        "dx_score": 3000,
+    }, language="zh-CN", show_version=False)
+    assert "成绩：SSS+ · 达成率 100.5000% · DX分 3000" in plus_result
 
     utage = format_presence({
         "status": "SELECTING",

@@ -114,7 +114,7 @@ async def main():
     assert any("42s 正在选歌" in text for text in packets), packets
     assert any("ACH 97.5000%" in text for text in packets), packets
     assert any("时间 1:00 / 2:00" in text for text in packets), packets
-    results = [text for text in packets if "结算：达成率 95.1234%" in text]
+    results = [text for text in packets if "成绩：AAA · 达成率 95.1234%" in text]
     assert len(results) >= 2, packets
     print("standalone integration ok: SSE, cards, result screen, UDP keepalive")
 

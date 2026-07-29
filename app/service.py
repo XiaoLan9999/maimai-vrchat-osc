@@ -157,6 +157,8 @@ class CardState:
             return self._set(self._format_presence(current), status)
 
         if name == "settle":
+            if self._player(event.get("player", 1)) != self.config["osc_player"]:
+                return None
             self.gameplay_active = False
             self.result_screen_active = False
             self.result_hold_until = now + 8.0

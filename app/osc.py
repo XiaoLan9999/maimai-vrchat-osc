@@ -102,6 +102,55 @@ def _number(value, digits=None):
     return ("{0:." + str(digits) + "f}").format(number)
 
 
+def _score_rank(event):
+    rank = str(event.get("rank") or "").strip().upper()
+    aliases = {
+        "RANK_D": "D",
+        "RANK_C": "C",
+        "RANK_B": "B",
+        "RANK_BB": "BB",
+        "RANK_BBB": "BBB",
+        "RANK_A": "A",
+        "RANK_AA": "AA",
+        "RANK_AAA": "AAA",
+        "RANK_S": "S",
+        "RANK_SP": "S+",
+        "RANK_SS": "SS",
+        "RANK_SSP": "SS+",
+        "RANK_SSS": "SSS",
+        "RANK_SSSP": "SSS+",
+    }
+    rank = aliases.get(rank, rank)
+    if rank in ("D", "C", "B", "BB", "BBB", "A", "AA", "AAA", "S", "S+", "SS", "SS+", "SSS", "SSS+"):
+        return rank
+
+    try:
+        achievement = float(event.get("achievement"))
+    except (TypeError, ValueError):
+        achievement = 0.0
+    if not math.isfinite(achievement):
+        achievement = 0.0
+    thresholds = (
+        (100.5, "SSS+"),
+        (100.0, "SSS"),
+        (99.5, "SS+"),
+        (99.0, "SS"),
+        (98.0, "S+"),
+        (97.0, "S"),
+        (94.0, "AAA"),
+        (90.0, "AA"),
+        (80.0, "A"),
+        (75.0, "BBB"),
+        (70.0, "BB"),
+        (60.0, "B"),
+        (50.0, "C"),
+    )
+    for minimum, label in thresholds:
+        if achievement >= minimum:
+            return label
+    return "D"
+
+
 def _song_time(value):
     try:
         seconds = max(0, int(float(value)))
@@ -366,6 +415,7 @@ def format_result(
     score = tr(
         language,
         "osc.result",
+        rank=_score_rank(event),
         achievement=_number(event.get("achievement"), 4)[:12],
         dx_score=_number(event.get("dx_score"))[:12],
     )

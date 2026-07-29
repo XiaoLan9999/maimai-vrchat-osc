@@ -11,7 +11,7 @@
 
 ## 安装
 
-1. 解压 `maimai-vrchat-osc-2.1.7-win64.zip`。
+1. 解压 `maimai-vrchat-osc-2.1.9-win64.zip`。
 2. 运行 `MaimaiVrchatOsc.exe`。
 3. 选择包含 `Sinmai.exe` 的游戏 `Package` 目录。
 4. 填写运行 VRChat 的电脑 IPv4；同机填写 `127.0.0.1`，局域网电脑填写其地址，
@@ -90,7 +90,7 @@ VRChat 中还需要打开 `Action Menu > OSC > Enabled`，接收电脑的专用�
 版本号 Ver.CN1.56-B
 ```
 
-游玩时显示曲名、双语谱面难度、歌曲已播放/总时长、达成率、DX 分、连击和 MISS；结算画面不显示已经结束的歌曲时间。结算画面存在期间
+游玩时显示曲名、双语谱面难度、歌曲已播放/总时长、达成率、DX 分、连击和 MISS；结算画面显示 `SSS+` 等成绩评级，且不显示已经结束的歌曲时间。结算画面存在期间
 持续保持结算卡片，离开结算后才切换到主界面或选歌。当前卡片默认每 5 秒强制
 重发一次，用于恢复临时 UDP 丢包。登录完成后，用户名固定显示在所有卡片顶部，
 开启“显示版本号”时，版本号固定显示在所有卡片底部。
@@ -101,7 +101,7 @@ VRChat 中还需要打开 `Action Menu > OSC > Enabled`，接收电脑的专用�
 
 ## 桥接与共存
 
-软件内置 `XiaoLanMaiBrdge 1.4.12`，自动安装前会校验 SHA-256，并将旧文件备份到：
+软件内置 `XiaoLanMaiBrdge 1.4.14`，自动安装前会校验 SHA-256，并将旧文件备份到：
 
 ```text
 Package\XiaoLanMaiBrdge.backups\<时间戳>
@@ -131,7 +131,7 @@ python -m pip install --target .builddeps -r requirements-build.txt
 
 ```text
 dist\standalone-stage\MaimaiVrchatOsc.exe
-dist\maimai-vrchat-osc-2.1.7-win64.zip
+dist\maimai-vrchat-osc-2.1.9-win64.zip
 ```
 
 旧的 DGHub-only 插件构建脚本保留为 `build-dghub-plugin.ps1`，`v1.4.3` 及更早

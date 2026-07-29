@@ -12,7 +12,7 @@ using HarmonyLib;
 using Manager;
 using MelonLoader;
 
-[assembly: MelonInfo(typeof(MaiDGBridge.BridgeMod), "XiaoLanMaiBrdge", "1.4.12", "XiaoLan9999", "")]
+[assembly: MelonInfo(typeof(MaiDGBridge.BridgeMod), "XiaoLanMaiBrdge", "1.4.14", "XiaoLan9999", "")]
 [assembly: MelonGame("sega-interactive", "Sinmai")]
 
 namespace MaiDGBridge
@@ -140,7 +140,7 @@ namespace MaiDGBridge
                     PublishPendingJudgements();
                     for (int player = 0; player < 2; player++)
                     {
-                        Snapshot result = _last[player];
+                        Snapshot result = RefreshFinalGameplayScore(player, _last[player]);
                         if (result != null)
                         {
                             _server.PublishJson(result.ToJson("settle", "RESULT"));
@@ -682,6 +682,11 @@ namespace MaiDGBridge
                 {
                     return null;
                 }
+                object scoreEnabled = ReadFirstMember(score, "IsEnable", "isEnable");
+                if (scoreEnabled != null && !ToBool(scoreEnabled))
+                {
+                    return null;
+                }
 
                 int musicId = ToInt(ReadFirstMember(resultProcess, "_musicID", "musicID", "MusicID", "musicId"));
                 int difficulty = ReadResultDifficulty(player);
@@ -696,32 +701,14 @@ namespace MaiDGBridge
                 }
 
                 uint track = previous == null ? GameManager.MusicTrackNumber : previous.Track;
-                object dxScoreValue = ReadFirstMember(score, "DxScore", "dxScore");
-                if (dxScoreValue == null)
-                {
-                    dxScoreValue = ReadFirstMember(userScore, "deluxscore", "DxScore", "dxScore");
-                }
                 Snapshot snapshot = new Snapshot
                 {
                     Player = player + 1,
                     Track = track,
-                    Critical = ToUInt(ReadFirstMember(score, "CriticalNum", "criticalNum")),
-                    Perfect = ToUInt(ReadFirstMember(score, "PerfectNum", "perfectNum")),
-                    Great = ToUInt(ReadFirstMember(score, "GreatNum", "greatNum")),
-                    Good = ToUInt(ReadFirstMember(score, "GoodNum", "goodNum")),
-                    Miss = ToUInt(ReadFirstMember(score, "MissNum", "missNum")),
-                    Combo = ToUInt(ReadFirstMember(score, "Combo", "combo")),
-                    DxScore = ToUInt(dxScoreValue),
-                    Achievement = ToDecimal(
-                        ReadFirstMember(userScore, "achivement", "achievement")),
                     MusicId = musicId,
                     Difficulty = difficulty
                 };
-                if (userScore == null || ReadFirstMember(userScore, "achivement", "achievement") == null)
-                {
-                    snapshot.Achievement = ToDecimal(
-                        InvokeNoArg(score, "GetAchivement") ?? InvokeNoArg(score, "GetAchievement"));
-                }
+                ApplyFinalScoreValues(snapshot, score, userScore);
                 Snapshot metadataSource = _lastResult[player] ?? previous;
                 if (metadataSource != null &&
                     metadataSource.MusicId == snapshot.MusicId &&
@@ -793,16 +780,15 @@ namespace MaiDGBridge
             }
 
             bool isUtage = IsUtageMusic(music, musicId);
-            int notesDifficulty = isUtage ? 0 : difficulty;
+            int notesDifficulty = isUtage ? 0 : ResolveExistingDifficulty(null, music, difficulty);
             snapshot.MusicId = musicId;
-            snapshot.Difficulty = isUtage ? 5 : difficulty;
-            snapshot.Chart = isUtage ? UtageChartName(music) : DifficultyName(difficulty);
+            snapshot.Difficulty = isUtage ? 5 : notesDifficulty;
+            snapshot.Chart = isUtage ? UtageChartName(music) : DifficultyName(notesDifficulty);
             snapshot.Title = ReadStringId(music, "name");
             snapshot.Composer = ReadStringId(music, "artistName");
             snapshot.Artist = snapshot.Composer;
 
-            object notes = ReadIndex(
-                ReadFirstMember(music, "notesData", "NotesData", "ScoreData", "scoreData"), notesDifficulty);
+            object notes = ReadNotesForDifficulty(null, music, notesDifficulty);
             if (notes == null)
             {
                 return;
@@ -958,12 +944,15 @@ namespace MaiDGBridge
                 presence.DifficultyId = 5;
                 presence.Difficulty = UtageChartName(music);
             }
-
-            object notes = ReadIndex(ReadFirstMember(musicSelectData, "ScoreData", "scoreData"), notesDifficulty);
-            if (notes == null)
+            else
             {
-                notes = ReadIndex(ReadFirstMember(music, "notesData", "NotesData", "ScoreData"), notesDifficulty);
+                notesDifficulty = ResolveExistingDifficulty(
+                    musicSelectData, music, presence.DifficultyId);
+                presence.DifficultyId = notesDifficulty;
+                presence.Difficulty = DifficultyName(notesDifficulty);
             }
+
+            object notes = ReadNotesForDifficulty(musicSelectData, music, notesDifficulty);
             if (notes != null)
             {
                 presence.Author = ReadStringId(notes, "notesDesigner");
@@ -1503,6 +1492,163 @@ namespace MaiDGBridge
             }
         }
 
+        private Snapshot RefreshFinalGameplayScore(int player, Snapshot snapshot)
+        {
+            if (snapshot == null)
+            {
+                return null;
+            }
+            try
+            {
+                object score = GamePlayManager.Instance.GetGameScore(player, -1);
+                object scoreEnabled = ReadFirstMember(score, "IsEnable", "isEnable");
+                if (scoreEnabled != null && !ToBool(scoreEnabled))
+                {
+                    return null;
+                }
+                ApplyFinalScoreValues(snapshot, score, null);
+            }
+            catch (Exception ex)
+            {
+                if (!_gameplayMetricsWarningLogged)
+                {
+                    _gameplayMetricsWarningLogged = true;
+                    MelonLogger.Warning("XiaoLanMaiBrdge final score unavailable: " + ex.Message);
+                }
+            }
+            return snapshot;
+        }
+
+        private static void ApplyFinalScoreValues(Snapshot snapshot, object score, object userScore)
+        {
+            if (snapshot == null)
+            {
+                return;
+            }
+            if (score == null && userScore == null)
+            {
+                return;
+            }
+
+            uint critical = ToUInt(ReadFirstMember(score, "CriticalNum", "criticalNum"));
+            uint perfect = ToUInt(ReadFirstMember(score, "PerfectNum", "perfectNum"));
+            uint great = ToUInt(ReadFirstMember(score, "GreatNum", "greatNum"));
+            uint good = ToUInt(ReadFirstMember(score, "GoodNum", "goodNum"));
+            uint miss = ToUInt(ReadFirstMember(score, "MissNum", "missNum"));
+            if (critical + perfect + great + good + miss > 0)
+            {
+                snapshot.Critical = critical;
+                snapshot.Perfect = perfect;
+                snapshot.Great = great;
+                snapshot.Good = good;
+                snapshot.Miss = miss;
+            }
+
+            object comboValue = ReadFirstMember(score, "MaxCombo", "maxCombo");
+            if (comboValue == null)
+            {
+                comboValue = ReadFirstMember(score, "Combo", "combo");
+            }
+            if (comboValue != null)
+            {
+                snapshot.Combo = ToUInt(comboValue);
+            }
+
+            object dxScoreValue = ReadFirstMember(score, "DxScore", "dxScore");
+            uint dxScore = ToUInt(dxScoreValue);
+            if (dxScoreValue == null || dxScore == 0)
+            {
+                object storedDxScore = ReadFirstMember(userScore, "deluxscore", "DxScore", "dxScore");
+                uint storedDx = ToUInt(storedDxScore);
+                if (storedDxScore != null && storedDx > 0)
+                {
+                    dxScore = storedDx;
+                }
+            }
+            snapshot.DxScore = dxScore;
+
+            object achievementValue = InvokeNoArg(score, "GetAchivement") ??
+                                      InvokeNoArg(score, "GetAchievement");
+            if (achievementValue != null)
+            {
+                snapshot.Achievement = ToDecimal(achievementValue);
+            }
+            else
+            {
+                object storedAchievement = ReadFirstMember(
+                    userScore, "achivement", "achievement", "Achievement");
+                if (storedAchievement != null)
+                {
+                    snapshot.Achievement = ToDecimal(storedAchievement) / 10000m;
+                }
+            }
+            snapshot.Rank = ReadScoreRank(score, userScore, snapshot.Achievement);
+        }
+
+        private static string ReadScoreRank(object score, object userScore, decimal achievement)
+        {
+            object value = ReadFirstMember(userScore, "scoreRank", "ScoreRank");
+            if (value != null)
+            {
+                string rank = ClearRankName(ToInt(value));
+                if (!string.IsNullOrEmpty(rank))
+                {
+                    return rank;
+                }
+            }
+
+            value = ReadFirstMember(score, "MusicRate", "musicRate");
+            if (value != null)
+            {
+                string rank = ClearRankName(ToInt(value));
+                if (!string.IsNullOrEmpty(rank))
+                {
+                    return rank;
+                }
+            }
+            return RankFromAchievement(achievement);
+        }
+
+        private static string ClearRankName(int rank)
+        {
+            switch (rank)
+            {
+                case 0: return "D";
+                case 1: return "C";
+                case 2: return "B";
+                case 3: return "BB";
+                case 4: return "BBB";
+                case 5: return "A";
+                case 6: return "AA";
+                case 7: return "AAA";
+                case 8: return "S";
+                case 9: return "S+";
+                case 10: return "SS";
+                case 11: return "SS+";
+                case 12: return "SSS";
+                case 13: return "SSS+";
+                default: return string.Empty;
+            }
+        }
+
+        private static string RankFromAchievement(decimal achievement)
+        {
+            if (achievement >= 100.5m) return "SSS+";
+            if (achievement >= 100m) return "SSS";
+            if (achievement >= 99.5m) return "SS+";
+            if (achievement >= 99m) return "SS";
+            if (achievement >= 98m) return "S+";
+            if (achievement >= 97m) return "S";
+            if (achievement >= 94m) return "AAA";
+            if (achievement >= 90m) return "AA";
+            if (achievement >= 80m) return "A";
+            if (achievement >= 75m) return "BBB";
+            if (achievement >= 70m) return "BB";
+            if (achievement >= 60m) return "B";
+            if (achievement >= 50m) return "C";
+            return "D";
+        }
+
         private bool TryReadGameplayTime(
             int player,
             out decimal progress,
@@ -1737,6 +1883,12 @@ namespace MaiDGBridge
                         snapshot.Difficulty = 5;
                         snapshot.Chart = UtageChartName(music);
                     }
+                    else
+                    {
+                        snapshot.Difficulty = ResolveExistingDifficulty(
+                            null, music, snapshot.Difficulty);
+                        snapshot.Chart = DifficultyName(snapshot.Difficulty);
+                    }
                 }
 
                 if (notes != null)
@@ -1874,6 +2026,51 @@ namespace MaiDGBridge
                 return ToText(rawValue);
             }
             return stringId is string ? ToText(stringId) : string.Empty;
+        }
+
+        private static int ResolveExistingDifficulty(
+            object musicSelectData, object music, int preferredDifficulty)
+        {
+            int preferred = preferredDifficulty < 0 || preferredDifficulty > 4
+                ? 0
+                : preferredDifficulty;
+            for (int difficulty = preferred; difficulty >= 0; difficulty--)
+            {
+                if (IsValidNotes(ReadNotesForDifficulty(musicSelectData, music, difficulty)))
+                {
+                    return difficulty;
+                }
+            }
+            for (int difficulty = preferred + 1; difficulty <= 4; difficulty++)
+            {
+                if (IsValidNotes(ReadNotesForDifficulty(musicSelectData, music, difficulty)))
+                {
+                    return difficulty;
+                }
+            }
+            return preferred;
+        }
+
+        private static object ReadNotesForDifficulty(
+            object musicSelectData, object music, int difficulty)
+        {
+            object selectedNotes = ReadIndex(
+                ReadFirstMember(musicSelectData, "ScoreData", "scoreData"), difficulty);
+            if (IsValidNotes(selectedNotes))
+            {
+                return selectedNotes;
+            }
+            object musicNotes = ReadIndex(
+                ReadFirstMember(music, "notesData", "NotesData", "ScoreData", "scoreData"),
+                difficulty);
+            return IsValidNotes(musicNotes) ? musicNotes : selectedNotes ?? musicNotes;
+        }
+
+        private static bool IsValidNotes(object notes)
+        {
+            return notes != null &&
+                   (ToInt(ReadMember(notes, "musicLevelID")) > 0 ||
+                    ToDecimal(ReadMember(notes, "level")) > 0m);
         }
 
         private static bool IsUtageMusic(object music, int musicId)
@@ -2037,6 +2234,7 @@ namespace MaiDGBridge
         public uint Combo;
         public uint DxScore;
         public decimal Achievement;
+        public string Rank = string.Empty;
         public int MusicId;
         public int Difficulty = -1;
         public string Version = string.Empty;
@@ -2070,6 +2268,7 @@ namespace MaiDGBridge
                    Combo == other.Combo &&
                    DxScore == other.DxScore &&
                    Achievement == other.Achievement &&
+                   Rank == other.Rank &&
                    MusicId == other.MusicId &&
                    Difficulty == other.Difficulty &&
                    Version == other.Version &&
@@ -2092,13 +2291,13 @@ namespace MaiDGBridge
                 CultureInfo.InvariantCulture,
                 "{{\"event\":\"{0}\",\"status\":\"{1}\",\"player\":{2},\"track\":{3}," +
                 "\"critical\":{4},\"perfect\":{5},\"great\":{6},\"good\":{7},\"miss\":{8}," +
-                "\"combo\":{9},\"dx_score\":{10},\"achievement\":{11:0.0000}," +
-                "\"music_id\":{12},\"difficulty_id\":{13},\"version\":\"{14}\",\"user_name\":\"{15}\",\"title\":\"{16}\"," +
-                "\"artist\":\"{17}\",\"author\":\"{18}\",\"composer\":\"{19}\",\"chart\":\"{20}\",\"level\":\"{21}\"," +
-                "\"constant\":{22:0.0},\"progress\":{23:0.0000}," +
-                "\"elapsed_seconds\":{24},\"duration_seconds\":{25}}}",
+                "\"combo\":{9},\"dx_score\":{10},\"achievement\":{11:0.0000},\"rank\":\"{12}\"," +
+                "\"music_id\":{13},\"difficulty_id\":{14},\"version\":\"{15}\",\"user_name\":\"{16}\",\"title\":\"{17}\"," +
+                "\"artist\":\"{18}\",\"author\":\"{19}\",\"composer\":\"{20}\",\"chart\":\"{21}\",\"level\":\"{22}\"," +
+                "\"constant\":{23:0.0},\"progress\":{24:0.0000}," +
+                "\"elapsed_seconds\":{25},\"duration_seconds\":{26}}}",
                 eventName, status, Player, Track, Critical, Perfect, Great, Good, Miss,
-                Combo, DxScore, Achievement, MusicId, Difficulty, JsonEscape(Version),
+                Combo, DxScore, Achievement, JsonEscape(Rank), MusicId, Difficulty, JsonEscape(Version),
                 JsonEscape(UserName), JsonEscape(Title), JsonEscape(Artist),
                 JsonEscape(Author), JsonEscape(Composer), JsonEscape(Chart),
                 JsonEscape(Level), Constant, Progress, ElapsedSeconds, DurationSeconds);
