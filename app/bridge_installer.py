@@ -255,20 +255,144 @@ def _write_marker(package, descriptor, dll_hash, backup):
             os.unlink(temporary)
 
 
-def _compatible_installed_build(package, descriptor, destination_hash):
+def _read_marker(package):
     marker_path = os.path.join(package, MARKER_NAME)
-    if not destination_hash or not os.path.isfile(marker_path):
-        return False
     try:
         with open(marker_path, encoding="utf-8-sig") as source:
             marker = json.load(source)
+        return marker if isinstance(marker, dict) else {}
     except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _version_tuple(value):
+    try:
+        parts = tuple(int(part) for part in str(value or "").strip().split("."))
+    except ValueError:
+        return ()
+    if len(parts) < 2 or len(parts) > 4 or any(part < 0 for part in parts):
+        return ()
+    return parts + (0,) * (4 - len(parts))
+
+
+def _compatible_installed_build(package, descriptor, destination_hash):
+    if not destination_hash:
+        return False
+    marker = _read_marker(package)
+    installed_version = _version_tuple(marker.get("bridge_version"))
+    bundled_version = _version_tuple(descriptor.get("bridge_version"))
+    if not installed_version or not bundled_version:
         return False
     return (
-        str(marker.get("bridge_version", ""))
-        == str(descriptor.get("bridge_version", ""))
-        and str(marker.get("dll_sha256", "")).lower() == destination_hash
+        installed_version >= bundled_version
+        and str(marker.get("dll_sha256", "")).lower() == destination_hash.lower()
     )
+
+
+def inspect_bridge_installation(
+    plugin_root,
+    configured_path="",
+    auto_detect=True,
+    running_packages=None,
+):
+    configured = str(configured_path or "").strip()
+    detected = False
+    package = resolve_package_path(configured)
+    if configured and package is None:
+        return {
+            "state": "invalid",
+            "package": "",
+            "detected": False,
+            "needs_update": False,
+            "installed_version": "",
+            "available_version": "",
+            "game_running": False,
+        }
+
+    if running_packages is None:
+        running_packages = find_running_game_packages()
+    else:
+        running_packages = [
+            item for item in (resolve_package_path(path) for path in running_packages) if item
+        ]
+
+    if package is None and auto_detect:
+        if len(running_packages) == 1:
+            package = running_packages[0]
+            detected = True
+        elif len(running_packages) > 1:
+            return {
+                "state": "multiple",
+                "package": "",
+                "detected": False,
+                "needs_update": False,
+                "installed_version": "",
+                "available_version": "",
+                "game_running": True,
+            }
+
+    if package is None:
+        return {
+            "state": "pending",
+            "package": "",
+            "detected": False,
+            "needs_update": False,
+            "installed_version": "",
+            "available_version": "",
+            "game_running": False,
+        }
+
+    package_running = any(_same_path(package, item) for item in running_packages)
+    try:
+        descriptor, _payload_dll, _payload_ini, payload_hash = _load_payload(plugin_root)
+    except Exception as exc:
+        return {
+            "state": "fail",
+            "package": package,
+            "detected": detected,
+            "needs_update": False,
+            "installed_version": "",
+            "available_version": "",
+            "game_running": package_running,
+            "diagnostic": str(exc),
+        }
+
+    available_version = str(descriptor.get("bridge_version", "")).strip()
+    dll_destination = os.path.join(package, "Mods", DLL_NAME)
+    destination_hash = _sha256(dll_destination) if os.path.isfile(dll_destination) else ""
+    marker = _read_marker(package)
+    marker_hash = str(marker.get("dll_sha256", "")).lower()
+    installed_version = (
+        str(marker.get("bridge_version", "")).strip()
+        if destination_hash and marker_hash == destination_hash.lower()
+        else ""
+    )
+    legacy_present = any(os.path.isfile(path) for path in _legacy_paths(package))
+    compatible = (
+        destination_hash == payload_hash
+        or _compatible_installed_build(package, descriptor, destination_hash)
+    ) and not legacy_present
+
+    if compatible:
+        state = "current"
+        if not installed_version:
+            installed_version = available_version
+    elif not destination_hash and not legacy_present:
+        state = "missing"
+    else:
+        state = "outdated"
+        if legacy_present and not installed_version:
+            installed_version = "legacy"
+
+    return {
+        "state": state,
+        "package": package,
+        "detected": detected,
+        "needs_update": state in ("missing", "outdated"),
+        "installed_version": installed_version,
+        "available_version": available_version,
+        "game_running": package_running,
+    }
 
 
 def ensure_bridge_installed(
@@ -380,11 +504,11 @@ def ensure_bridge_installed(
             game_running=package_running,
         )
 
-    if (destination_hash or legacy_present) and package_running:
+    if package_running:
         return _result(
             "warn",
-            "检测到旧版桥接；游戏运行中，暂缓更新",
-            "关闭游戏后插件会自动完成更新并备份旧文件",
+            "游戏运行中，暂缓安装或更新桥接",
+            "关闭游戏后重新检测；确认后会备份旧文件并更新",
             package=package,
             path_state="ok",
             path_detail=path_detail,

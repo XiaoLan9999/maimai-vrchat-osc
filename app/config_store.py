@@ -11,7 +11,7 @@ from i18n import DEFAULT_LANGUAGE, LANGUAGE_CODES, normalize_language, tr
 
 
 APP_NAME = "MaimaiVrchatOsc"
-APP_VERSION = "2.1.10"
+APP_VERSION = "2.1.11"
 BRIDGE_VERSION = "1.4.15"
 
 DEFAULT_CONFIG = {

@@ -27,7 +27,25 @@ def main():
         return normalized
 
     original_save = gui_module.save_config
+    original_update_check = gui_module.check_for_updates
+    original_bridge_check = gui_module.inspect_bridge_installation
     gui_module.save_config = fake_save
+    gui_module.check_for_updates = lambda _version: {
+        "state": "current",
+        "current_version": "2.1.11",
+        "latest_version": "2.1.11",
+        "bridge_version": "1.4.15",
+        "release_url": "https://github.com/XiaoLan9999/maimai-vrchat-osc/releases/tag/v2.1.11",
+    }
+    gui_module.inspect_bridge_installation = lambda *_args, **_kwargs: {
+        "state": "pending",
+        "package": "",
+        "detected": False,
+        "needs_update": False,
+        "installed_version": "",
+        "available_version": "1.4.15",
+        "game_running": False,
+    }
     root = tk.Tk()
     try:
         config = dict(DEFAULT_CONFIG)
@@ -49,6 +67,8 @@ def main():
         buttons = [item.cget("text") for item in widgets if item.winfo_class() == "Button"]
         assert "仅保存" not in buttons
         assert "启动 OSC" in buttons
+        assert "检测桥接 DLL" in buttons
+        assert "检查程序更新" in buttons
 
         version_toggle = next(
             item
@@ -67,14 +87,17 @@ def main():
         assert len(saved) > count
         assert saved[-1]["osc_host"] == "10.0.0.8"
         assert app.save_state_var.get() == "已自动保存"
+        assert app.status_vars["update"].get() == "当前 2.1.11 已是最新版"
         app.close()
     finally:
         gui_module.save_config = original_save
+        gui_module.check_for_updates = original_update_check
+        gui_module.inspect_bridge_installation = original_bridge_check
         try:
             root.destroy()
         except tk.TclError:
             pass
-    print("gui ok: locale font, no save button, immediate toggles, debounced field save")
+    print("gui ok: update and bridge checks, immediate toggles, debounced field save")
 
 
 if __name__ == "__main__":

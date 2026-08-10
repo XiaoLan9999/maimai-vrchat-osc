@@ -3,14 +3,17 @@
 import json
 import os
 import queue
+import threading
 import webbrowser
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, ttk
 
 from config_store import APP_VERSION, default_config_path, save_config
+from bridge_installer import ensure_bridge_installed, inspect_bridge_installation
 from i18n import LANGUAGE_CHOICES, language_code, language_label, tr
 from service import StandaloneService
+from update_checker import check_for_updates
 
 
 BG = "#F4F1EA"
@@ -42,6 +45,9 @@ class App:
         self._last_events = {}
         self._auto_save_job = None
         self._save_feedback_job = None
+        self._update_checking = False
+        self._prompted_update_versions = set()
+        self._bridge_prompt_key = None
         self._make_vars()
         self._load_vars()
         self.root.geometry("700x900")
@@ -51,8 +57,10 @@ class App:
         self._build()
         self._install_auto_save()
         self._poll_events()
+        self.root.after(180, self.check_bridge)
+        self.root.after(300, self.check_app_update)
         if self.config.get("auto_start", True):
-            self.root.after(350, self.start)
+            self.root.after(850, self.start)
 
     def _make_vars(self):
         self.package_var = tk.StringVar()
@@ -77,6 +85,7 @@ class App:
         self.save_state_var = tk.StringVar()
         self.status_vars = {
             "bridge": tk.StringVar(),
+            "update": tk.StringVar(),
             "stream": tk.StringVar(),
             "osc": tk.StringVar(),
             "card": tk.StringVar(),
@@ -229,6 +238,7 @@ class App:
         self._section_title(live, tr(language, "section.live"), 0)
         status_keys = (
             ("bridge", "status.bridge"),
+            ("update", "status.app_update"),
             ("stream", "status.stream"),
             ("osc", "status.osc"),
             ("card", "status.card"),
@@ -238,7 +248,7 @@ class App:
 
         preview = tk.Frame(live, bg=SAGE_PALE, padx=14, pady=12)
         preview.grid(
-            row=1, column=1, rowspan=4, sticky="nsew", padx=(8, 20), pady=(0, 12)
+            row=1, column=1, rowspan=5, sticky="nsew", padx=(8, 20), pady=(0, 12)
         )
         preview.grid_columnconfigure(0, weight=1)
         preview.grid_rowconfigure(0, weight=1)
@@ -260,7 +270,7 @@ class App:
         self.card.grid(row=0, column=0, sticky="nsew")
 
         actions = tk.Frame(live, bg=CARD)
-        actions.grid(row=5, column=0, columnspan=2, sticky="ew", padx=20, pady=(4, 20))
+        actions.grid(row=6, column=0, columnspan=2, sticky="ew", padx=20, pady=(4, 20))
         actions.grid_columnconfigure(0, weight=1)
         actions.grid_columnconfigure(1, weight=1)
         self.start_action_var.set(
@@ -282,6 +292,12 @@ class App:
         self._button(
             actions, tr(language, "action.open_config"), self.open_config_dir
         ).grid(row=1, column=1, sticky="ew", padx=(4, 0))
+        self._button(
+            actions, tr(language, "action.check_bridge"), self.check_bridge_manual
+        ).grid(row=2, column=0, sticky="ew", padx=(0, 4), pady=(8, 0))
+        self._button(
+            actions, tr(language, "action.check_update"), self.check_app_update_manual
+        ).grid(row=2, column=1, sticky="ew", padx=(4, 0), pady=(8, 0))
 
         footer = tk.Frame(outer, bg=BG)
         footer.grid(row=4, column=0, sticky="ew", pady=(15, 0))
@@ -581,6 +597,205 @@ class App:
         selected = filedialog.askdirectory(title=self._t("dialog.choose_package"))
         if selected:
             self.package_var.set(selected)
+            self.save(show_error=False)
+            self._bridge_prompt_key = None
+            self.root.after(50, self.check_bridge)
+
+    @staticmethod
+    def _bridge_message_key(result):
+        return StandaloneService._bridge_message_key(result)
+
+    @staticmethod
+    def _bridge_message_values(result):
+        return StandaloneService._bridge_message_values(result)
+
+    def _record_bridge_result(self, result):
+        event = dict(result)
+        event["kind"] = "bridge"
+        event["message_key"] = self._bridge_message_key(event)
+        event["message_values"] = self._bridge_message_values(event)
+        self._last_events["bridge"] = event
+        detected = str(event.get("package", ""))
+        if event.get("detected") and detected and detected != self.package_var.get():
+            self.package_var.set(detected)
+            self.save(show_error=False)
+        self._render_statuses()
+        return event
+
+    def check_bridge_manual(self):
+        self._bridge_prompt_key = None
+        self.check_bridge(manual=True)
+
+    def check_bridge(self, manual=False):
+        try:
+            result = inspect_bridge_installation(
+                self.resource_root,
+                self.package_var.get(),
+                self.auto_detect_var.get(),
+            )
+        except Exception as exc:
+            result = {"state": "fail", "diagnostic": str(exc)}
+        event = self._record_bridge_result(result)
+        state = event.get("state")
+        if state == "current":
+            self._bridge_prompt_key = None
+            if manual:
+                messagebox.showinfo(
+                    self._t("dialog.bridge_title"),
+                    self._t(
+                        "dialog.bridge_current",
+                        version=event.get("installed_version")
+                        or event.get("available_version")
+                        or "?",
+                    ),
+                    parent=self.root,
+                )
+            return
+        if state not in ("missing", "outdated"):
+            if manual and state in ("invalid", "multiple", "fail"):
+                messagebox.showwarning(
+                    self._t("dialog.bridge_title"),
+                    self._event_detail(event, "status.check_failed"),
+                    parent=self.root,
+                )
+            return
+        if not manual and not self.auto_install_var.get():
+            return
+        self._prompt_bridge_update(event, manual)
+
+    def _prompt_bridge_update(self, event, manual=False):
+        prompt_key = (
+            os.path.normcase(str(event.get("package", ""))),
+            event.get("state"),
+            event.get("installed_version", ""),
+            event.get("available_version", ""),
+            bool(event.get("game_running")),
+        )
+        if not manual and prompt_key == self._bridge_prompt_key:
+            return
+        self._bridge_prompt_key = prompt_key
+        if event.get("game_running"):
+            messagebox.showwarning(
+                self._t("dialog.bridge_title"),
+                self._t("dialog.bridge_running"),
+                parent=self.root,
+            )
+            return
+        key = (
+            "dialog.bridge_missing"
+            if event.get("state") == "missing"
+            else "dialog.bridge_outdated"
+        )
+        confirmed = messagebox.askyesno(
+            self._t("dialog.bridge_title"),
+            self._t(
+                key,
+                installed=event.get("installed_version") or self._t("status.unknown"),
+                available=event.get("available_version") or "?",
+            ),
+            parent=self.root,
+        )
+        if not confirmed:
+            return
+        installed = ensure_bridge_installed(
+            self.resource_root,
+            event.get("package") or self.package_var.get(),
+            auto_detect=False,
+            auto_install=True,
+        )
+        if installed.get("state") != "ok":
+            messagebox.showwarning(
+                self._t("dialog.bridge_title"),
+                self._t(
+                    "dialog.bridge_failed",
+                    reason=installed.get("detail") or self._t("status.failed"),
+                ),
+                parent=self.root,
+            )
+            self.check_bridge()
+            return
+        self._bridge_prompt_key = None
+        verified = inspect_bridge_installation(
+            self.resource_root,
+            installed.get("package") or self.package_var.get(),
+            auto_detect=False,
+        )
+        self._record_bridge_result(verified)
+        messagebox.showinfo(
+            self._t("dialog.bridge_title"),
+            self._t(
+                "dialog.bridge_updated",
+                version=verified.get("installed_version")
+                or verified.get("available_version")
+                or "?",
+            ),
+            parent=self.root,
+        )
+
+    def check_app_update_manual(self):
+        self.check_app_update(manual=True)
+
+    def check_app_update(self, manual=False):
+        if self._update_checking:
+            return
+        self._update_checking = True
+        self._last_events["update"] = {"state": "checking"}
+        self.status_vars["update"].set(self._t("status.update_checking"))
+
+        def worker():
+            try:
+                result = check_for_updates(APP_VERSION)
+            except Exception as exc:
+                result = {"state": "fail", "diagnostic": str(exc)}
+            result["kind"] = "app_update"
+            result["manual"] = manual
+            self.events.put(result)
+
+        threading.Thread(target=worker, name="app-update-check", daemon=True).start()
+
+    def _handle_app_update(self, event):
+        self._update_checking = False
+        self._last_events["update"] = event
+        state = event.get("state")
+        manual = bool(event.get("manual"))
+        if state == "current":
+            self.status_vars["update"].set(
+                self._t("status.update_current", version=APP_VERSION)
+            )
+            if manual:
+                messagebox.showinfo(
+                    self._t("dialog.update_title"),
+                    self._t("dialog.update_current", version=APP_VERSION),
+                    parent=self.root,
+                )
+            return
+        if state == "update":
+            latest = str(event.get("latest_version") or "?")
+            self.status_vars["update"].set(
+                self._t("status.update_available", version=latest)
+            )
+            if not manual and latest in self._prompted_update_versions:
+                return
+            self._prompted_update_versions.add(latest)
+            if messagebox.askyesno(
+                self._t("dialog.update_title"),
+                self._t(
+                    "dialog.update_available",
+                    current=APP_VERSION,
+                    latest=latest,
+                    bridge=event.get("bridge_version") or "?",
+                ),
+                parent=self.root,
+            ):
+                webbrowser.open_new(event["release_url"])
+            return
+        self.status_vars["update"].set(self._t("status.update_failed"))
+        if manual:
+            messagebox.showwarning(
+                self._t("dialog.update_title"),
+                self._t("dialog.update_failed"),
+                parent=self.root,
+            )
 
     def save(self, show_error=True):
         try:
@@ -648,6 +863,25 @@ class App:
         for name in ("bridge", "stream", "osc"):
             event = self._last_events.get(name, {})
             self.status_vars[name].set(self._event_detail(event))
+        update_event = self._last_events.get("update", {})
+        update_state = update_event.get("state")
+        if update_state == "checking":
+            self.status_vars["update"].set(self._t("status.update_checking"))
+        elif update_state == "current":
+            self.status_vars["update"].set(
+                self._t("status.update_current", version=APP_VERSION)
+            )
+        elif update_state == "update":
+            self.status_vars["update"].set(
+                self._t(
+                    "status.update_available",
+                    version=update_event.get("latest_version") or "?",
+                )
+            )
+        elif update_state == "fail":
+            self.status_vars["update"].set(self._t("status.update_failed"))
+        else:
+            self.status_vars["update"].set(self._t("status.update_not_checked"))
         card_event = self._last_events.get("card", {})
         card_keys = {
             "STARTING": "osc.starting",
@@ -680,14 +914,12 @@ class App:
                 event = self.events.get_nowait()
                 kind = event.get("kind")
                 if kind == "bridge":
-                    self._last_events["bridge"] = event
-                    detected = str(event.get("package", ""))
-                    if event.get("detected") and detected and detected != self.package_var.get():
-                        self.package_var.set(detected)
-                        try:
-                            self.config = save_config(self._read_vars())
-                        except (OSError, ValueError):
-                            pass
+                    self._record_bridge_result(event)
+                    if event.get("state") in ("missing", "outdated"):
+                        if self.auto_install_var.get():
+                            self._prompt_bridge_update(event)
+                elif kind == "app_update":
+                    self._handle_app_update(event)
                 elif kind == "stream":
                     self._last_events["stream"] = event
                     if event.get("state") == "connected":

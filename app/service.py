@@ -5,7 +5,7 @@ import threading
 import time
 import unicodedata
 
-from bridge_installer import ensure_bridge_installed
+from bridge_installer import inspect_bridge_installation
 from i18n import tr
 from osc import OscChatboxPublisher, format_playing, format_presence, format_result
 from sse_client import SseClient
@@ -237,18 +237,30 @@ class StandaloneService:
 
     @staticmethod
     def _bridge_message_key(result):
-        if result.get("restart_required"):
-            return "status.bridge_restart"
         state = result.get("state")
-        if state == "ok":
-            return "status.bridge_ready"
+        if state == "current":
+            return "status.bridge_current"
         if state == "pending":
             return "status.bridge_waiting"
-        if state == "idle":
-            return "status.bridge_disabled"
-        if state == "warn":
-            return "status.warning"
-        return "status.failed"
+        if state == "missing":
+            return "status.bridge_missing"
+        if state == "outdated":
+            return "status.bridge_outdated"
+        if state == "multiple":
+            return "status.bridge_multiple"
+        if state == "invalid":
+            return "status.bridge_invalid"
+        return "status.check_failed"
+
+    @staticmethod
+    def _bridge_message_values(result):
+        return {
+            "version": result.get("installed_version")
+            or result.get("available_version")
+            or "?",
+            "installed": result.get("installed_version") or "?",
+            "available": result.get("available_version") or "?",
+        }
 
     def _run(self):
         config = self._config
@@ -268,7 +280,7 @@ class StandaloneService:
             activity = ActivityGate(config["activity_retry_limit"])
             osc_active = True
             last_sent = 0.0
-            next_install = 0.0
+            next_bridge_check = 0.0
             generation = 0
             self._emit(
                 kind="service",
@@ -309,16 +321,18 @@ class StandaloneService:
                         detail=tr(language, "status.test_sent"),
                     )
 
-                if now >= next_install:
+                if now >= next_bridge_check:
                     try:
-                        install = ensure_bridge_installed(
+                        inspection = inspect_bridge_installation(
                             self.resource_root,
                             config["game_package"],
                             config["auto_detect_game"],
-                            config["auto_install_bridge"],
                         )
-                        install["message_key"] = self._bridge_message_key(install)
-                        self._emit(kind="bridge", **install)
+                        inspection["message_key"] = self._bridge_message_key(inspection)
+                        inspection["message_values"] = self._bridge_message_values(
+                            inspection
+                        )
+                        self._emit(kind="bridge", **inspection)
                     except Exception as exc:
                         self._emit(
                             kind="bridge",
@@ -327,7 +341,7 @@ class StandaloneService:
                             detail=tr(language, "status.check_failed"),
                             diagnostic=str(exc),
                         )
-                    next_install = now + 3.0
+                    next_bridge_check = now + 3.0
 
                 try:
                     event_generation, event = events.get(timeout=0.25)

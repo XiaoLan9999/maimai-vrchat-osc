@@ -8,7 +8,7 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "app"))
 
-from bridge_installer import ensure_bridge_installed  # noqa: E402
+from bridge_installer import ensure_bridge_installed, inspect_bridge_installation  # noqa: E402
 from config_store import DEFAULT_CONFIG, load_config, normalize_config, save_config  # noqa: E402
 from osc import format_playing, format_presence, format_result  # noqa: E402
 from service import ActivityGate, CardState  # noqa: E402
@@ -363,6 +363,75 @@ def test_bridge_coexistence():
         assert not result["backup"], result
 
 
+def test_bridge_inspection():
+    with tempfile.TemporaryDirectory() as temporary:
+        root = pathlib.Path(temporary)
+        resource = root / "resource"
+        payload = resource / "payload"
+        package = root / "Package"
+        (package / "Mods").mkdir(parents=True)
+        payload.mkdir(parents=True)
+        (package / "Sinmai.exe").write_bytes(b"exe")
+
+        bundled = b"bundled bridge"
+        bundled_hash = hashlib.sha256(bundled).hexdigest()
+        (payload / "XiaoLanMaiBrdge.dll").write_bytes(bundled)
+        (payload / "XiaoLanMaiBrdge.ini").write_text("Enabled=true\n", encoding="utf-8")
+        (payload / "bridge.json").write_text(json.dumps({
+            "plugin_version": "2.1.11",
+            "bridge_version": "1.4.15",
+            "sha256": bundled_hash,
+        }), encoding="utf-8")
+
+        missing = inspect_bridge_installation(
+            str(resource), str(package), auto_detect=False, running_packages=[]
+        )
+        assert missing["state"] == "missing", missing
+
+        old = b"old bridge"
+        old_hash = hashlib.sha256(old).hexdigest()
+        dll = package / "Mods" / "XiaoLanMaiBrdge.dll"
+        marker = package / "XiaoLanMaiBrdge.dghub.json"
+        dll.write_bytes(old)
+        marker.write_text(json.dumps({
+            "bridge_version": "1.4.14",
+            "dll_sha256": old_hash,
+        }), encoding="utf-8")
+        outdated = inspect_bridge_installation(
+            str(resource), str(package), auto_detect=False, running_packages=[str(package)]
+        )
+        assert outdated["state"] == "outdated" and outdated["game_running"], outdated
+
+        deferred = ensure_bridge_installed(
+            str(resource), str(package), auto_detect=False, running_packages=[str(package)]
+        )
+        assert deferred["state"] == "warn", deferred
+        assert dll.read_bytes() == old
+
+        installed = ensure_bridge_installed(
+            str(resource), str(package), auto_detect=False, running_packages=[]
+        )
+        assert installed["state"] == "ok" and installed["backup"], installed
+        current = inspect_bridge_installation(
+            str(resource), str(package), auto_detect=False, running_packages=[]
+        )
+        assert current["state"] == "current", current
+        assert current["installed_version"] == "1.4.15", current
+
+        future = b"future bridge"
+        future_hash = hashlib.sha256(future).hexdigest()
+        dll.write_bytes(future)
+        marker.write_text(json.dumps({
+            "bridge_version": "1.4.16",
+            "dll_sha256": future_hash,
+        }), encoding="utf-8")
+        no_downgrade = inspect_bridge_installation(
+            str(resource), str(package), auto_detect=False, running_packages=[]
+        )
+        assert no_downgrade["state"] == "current", no_downgrade
+        assert no_downgrade["installed_version"] == "1.4.16", no_downgrade
+
+
 if __name__ == "__main__":
     test_config()
     test_guest_name_normalization()
@@ -370,4 +439,5 @@ if __name__ == "__main__":
     test_languages_and_version_toggle()
     test_activity_gate()
     test_bridge_coexistence()
-    print("standalone ok: config, state machine, live-play gating, bridge coexistence")
+    test_bridge_inspection()
+    print("standalone ok: config, state machine, live-play gating, bridge inspection")

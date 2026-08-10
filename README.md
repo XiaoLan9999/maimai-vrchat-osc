@@ -14,14 +14,19 @@ Chatbox sender to disable.
 
 ## Installation
 
-1. Extract `maimai-vrchat-osc-2.1.10-win64.zip`.
+1. Extract `maimai-vrchat-osc-2.1.11-win64.zip`.
 2. Run `MaimaiVrchatOsc.exe`.
 3. Select the game `Package` directory containing `Sinmai.exe`.
 4. Set the IPv4 address of the VRChat computer. Use `127.0.0.1` on the same
    computer, or its LAN address such as `10.0.0.168`. Keep port `9000` unless
    VRChat uses a custom OSC port.
-5. Click **Start OSC**. Restart the game once if the bridge was installed
-   or updated.
+5. The app checks the bridge DLL first. Confirm installation or update, then
+   click **Start OSC**.
+
+The app checks for new releases on startup and also provides a manual **Check
+for updates** action. Selecting a game folder immediately performs an independent
+bridge DLL check. A missing or old bridge is updated only after confirmation and
+backup. No DLL is modified while the game is running.
 
 Enable `Action Menu > OSC > Enabled` in VRChat. The receiving computer must
 allow inbound UDP 9000 on its Private network profile.
@@ -128,7 +133,7 @@ Outputs:
 
 ```text
 dist\standalone-stage\MaimaiVrchatOsc.exe
-dist\maimai-vrchat-osc-2.1.10-win64.zip
+dist\maimai-vrchat-osc-2.1.11-win64.zip
 ```
 
 The legacy DGHub-only build remains available as `build-dghub-plugin.ps1` and

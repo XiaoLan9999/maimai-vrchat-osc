@@ -11,12 +11,16 @@
 
 ## 安装
 
-1. 解压 `maimai-vrchat-osc-2.1.10-win64.zip`。
+1. 解压 `maimai-vrchat-osc-2.1.11-win64.zip`。
 2. 运行 `MaimaiVrchatOsc.exe`。
 3. 选择包含 `Sinmai.exe` 的游戏 `Package` 目录。
 4. 填写运行 VRChat 的电脑 IPv4；同机填写 `127.0.0.1`，局域网电脑填写其地址，
    例如 `10.0.0.168`。端口通常保持 `9000`。
-5. 点击“启动 OSC”。如果软件安装或更新了桥接，退出并重新启动一次游戏。
+5. 软件会检测桥接 DLL；确认安装或更新后，再点击“启动 OSC”。
+
+程序启动时会检查新版本并弹窗提示；也可随时点击“检查程序更新”打开 GitHub
+发布页。选择游戏目录后会立即单独检测桥接 DLL，缺失或版本较旧时先询问，确认后
+才备份并更新。游戏运行中绝不会修改 DLL，需完全退出游戏后再次检测。
 
 VRChat 中还需要打开 `Action Menu > OSC > Enabled`，接收电脑的专用网络防火墙
 需要允许入站 UDP 9000。
@@ -26,7 +30,7 @@ VRChat 中还需要打开 `Action Menu > OSC > Enabled`，接收电脑的专用�
 程序使用轻简、留白为主的原生界面。简中、繁中、日文分别使用对应地区的
 `Noto Sans` 字体，英文使用 `Segoe UI`，可以直接修改：
 
-- 游戏 Package 目录和自动识别/安装；
+- 游戏 Package 目录、自动识别和桥接更新提示；
 - VRChat IPv4、OSC 端口和显示玩家；
 - 普通刷新间隔与保活间隔（刷新硬下限为 1 秒，高频变化只发送最新状态）；
 - 机台失联后的重试次数；
@@ -101,7 +105,7 @@ VRChat 中还需要打开 `Action Menu > OSC > Enabled`，接收电脑的专用�
 
 ## 桥接与共存
 
-软件内置 `XiaoLanMaiBrdge 1.4.15`，自动安装前会校验 SHA-256，并将旧文件备份到：
+软件内置 `XiaoLanMaiBrdge 1.4.15`，安装前会校验 SHA-256，并将旧文件备份到：
 
 ```text
 Package\XiaoLanMaiBrdge.backups\<时间戳>
@@ -131,7 +135,7 @@ python -m pip install --target .builddeps -r requirements-build.txt
 
 ```text
 dist\standalone-stage\MaimaiVrchatOsc.exe
-dist\maimai-vrchat-osc-2.1.10-win64.zip
+dist\maimai-vrchat-osc-2.1.11-win64.zip
 ```
 
 旧的 DGHub-only 插件构建脚本保留为 `build-dghub-plugin.ps1`，`v1.4.3` 及更早
