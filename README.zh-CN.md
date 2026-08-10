@@ -11,7 +11,7 @@
 
 ## 安装
 
-1. 解压 `maimai-vrchat-osc-2.1.9-win64.zip`。
+1. 解压 `maimai-vrchat-osc-2.1.10-win64.zip`。
 2. 运行 `MaimaiVrchatOsc.exe`。
 3. 选择包含 `Sinmai.exe` 的游戏 `Package` 目录。
 4. 填写运行 VRChat 的电脑 IPv4；同机填写 `127.0.0.1`，局域网电脑填写其地址，
@@ -101,7 +101,7 @@ VRChat 中还需要打开 `Action Menu > OSC > Enabled`，接收电脑的专用�
 
 ## 桥接与共存
 
-软件内置 `XiaoLanMaiBrdge 1.4.14`，自动安装前会校验 SHA-256，并将旧文件备份到：
+软件内置 `XiaoLanMaiBrdge 1.4.15`，自动安装前会校验 SHA-256，并将旧文件备份到：
 
 ```text
 Package\XiaoLanMaiBrdge.backups\<时间戳>
@@ -131,7 +131,7 @@ python -m pip install --target .builddeps -r requirements-build.txt
 
 ```text
 dist\standalone-stage\MaimaiVrchatOsc.exe
-dist\maimai-vrchat-osc-2.1.9-win64.zip
+dist\maimai-vrchat-osc-2.1.10-win64.zip
 ```
 
 旧的 DGHub-only 插件构建脚本保留为 `build-dghub-plugin.ps1`，`v1.4.3` 及更早

@@ -12,7 +12,7 @@ using HarmonyLib;
 using Manager;
 using MelonLoader;
 
-[assembly: MelonInfo(typeof(MaiDGBridge.BridgeMod), "XiaoLanMaiBrdge", "1.4.14", "XiaoLan9999", "")]
+[assembly: MelonInfo(typeof(MaiDGBridge.BridgeMod), "XiaoLanMaiBrdge", "1.4.15", "XiaoLan9999", "")]
 [assembly: MelonGame("sega-interactive", "Sinmai")]
 
 namespace MaiDGBridge
@@ -24,6 +24,7 @@ namespace MaiDGBridge
         private readonly Snapshot[] _hookCounts = new Snapshot[2];
         private readonly bool[] _judgePublishPending = new bool[2];
         private readonly Snapshot[] _lastResult = new Snapshot[2];
+        private readonly Snapshot[] _finalGameplay = new Snapshot[2];
         private Snapshot _selectedMetadata;
         private readonly Stopwatch _clock = Stopwatch.StartNew();
         private static BridgeMod _active;
@@ -105,7 +106,8 @@ namespace MaiDGBridge
                 bool inGame = GameManager.IsInGame;
                 long now = _clock.ElapsedMilliseconds;
 
-                if (_resultProcess != null && ShouldCaptureResult(now))
+                bool gameplayJustEnded = !inGame && _wasInGame;
+                if (_resultProcess != null && !gameplayJustEnded && ShouldCaptureResult(now))
                 {
                     CaptureResultEvents(now);
                 }
@@ -126,6 +128,8 @@ namespace MaiDGBridge
                         }
                         _lastResult[0] = null;
                         _lastResult[1] = null;
+                        _finalGameplay[0] = null;
+                        _finalGameplay[1] = null;
                         _resultHoldUntil = 0;
                         _lastGameplayMetricsCapture = now - GameplayMetricsIntervalMs;
                         _server.PublishJson("{\"event\":\"state\",\"status\":\"PLAYING\"}");
@@ -145,6 +149,7 @@ namespace MaiDGBridge
                         {
                             _server.PublishJson(result.ToJson("settle", "RESULT"));
                             _lastResult[player] = result;
+                            _finalGameplay[player] = result;
                             _resultHoldUntil = now + 10000;
                         }
                         _last[player] = null;
@@ -670,15 +675,11 @@ namespace MaiDGBridge
                 object score = ReadIndex(scoreLists, player);
                 object userScore = ReadIndex(
                     ReadFirstMember(resultProcess, "_userScores", "userScores"), player);
-                if (score == null)
-                {
-                    score = userScore;
-                }
-                if (score == null)
+                if (score == null && userScore == null)
                 {
                     score = GamePlayManager.Instance.GetGameScore(player, -1);
                 }
-                if (score == null)
+                if (score == null && userScore == null)
                 {
                     return null;
                 }
@@ -688,19 +689,36 @@ namespace MaiDGBridge
                     return null;
                 }
 
-                int musicId = ToInt(ReadFirstMember(resultProcess, "_musicID", "musicID", "MusicID", "musicId"));
-                int difficulty = ReadResultDifficulty(player);
-                Snapshot previous = _last[player];
-                if (musicId <= 0 && previous != null)
+                object sessionInfo = ReadFirstMember(score, "SessionInfo", "sessionInfo");
+                int musicId = ToInt(ReadFirstMember(
+                    resultProcess, "_musicID", "musicID", "MusicID", "musicId"));
+                int sessionMusicId = ToInt(ReadFirstMember(sessionInfo, "musicId", "MusicId"));
+                if (musicId <= 0 && sessionMusicId > 0)
                 {
-                    musicId = previous.MusicId;
+                    musicId = sessionMusicId;
                 }
-                if (difficulty < 0 && previous != null)
+                Snapshot previous = _last[player];
+                Snapshot baseline = _finalGameplay[player] ?? _lastResult[player] ?? previous;
+                if (musicId <= 0 && baseline != null)
                 {
-                    difficulty = previous.Difficulty;
+                    musicId = baseline.MusicId;
                 }
 
-                uint track = previous == null ? GameManager.MusicTrackNumber : previous.Track;
+                bool matchingBaseline = baseline != null &&
+                                        baseline.MusicId > 0 &&
+                                        baseline.MusicId == musicId;
+                int difficulty = matchingBaseline ? baseline.Difficulty : -1;
+                if (difficulty < 0 || difficulty > 5)
+                {
+                    object sessionDifficulty = ReadFirstMember(
+                        sessionInfo, "difficulty", "Difficulty");
+                    int value = ToInt(sessionDifficulty);
+                    difficulty = sessionDifficulty != null && value >= 0 && value < 6
+                        ? value
+                        : ReadResultDifficulty(player);
+                }
+
+                uint track = matchingBaseline ? baseline.Track : GameManager.MusicTrackNumber;
                 Snapshot snapshot = new Snapshot
                 {
                     Player = player + 1,
@@ -708,8 +726,12 @@ namespace MaiDGBridge
                     MusicId = musicId,
                     Difficulty = difficulty
                 };
+                if (matchingBaseline)
+                {
+                    CopyScoreValues(baseline, snapshot);
+                }
                 ApplyFinalScoreValues(snapshot, score, userScore);
-                Snapshot metadataSource = _lastResult[player] ?? previous;
+                Snapshot metadataSource = matchingBaseline ? baseline : null;
                 if (metadataSource != null &&
                     metadataSource.MusicId == snapshot.MusicId &&
                     metadataSource.Difficulty == snapshot.Difficulty &&
@@ -721,7 +743,7 @@ namespace MaiDGBridge
                 {
                     ApplyResultMetadata(snapshot, musicId, difficulty);
                 }
-                if (previous != null)
+                if (previous != null && previous.MusicId == snapshot.MusicId)
                 {
                     if (snapshot.MusicId <= 0 || string.IsNullOrEmpty(snapshot.Title))
                     {
@@ -1551,7 +1573,11 @@ namespace MaiDGBridge
             }
             if (comboValue != null)
             {
-                snapshot.Combo = ToUInt(comboValue);
+                uint combo = ToUInt(comboValue);
+                if (combo > 0 || snapshot.Combo == 0)
+                {
+                    snapshot.Combo = combo;
+                }
             }
 
             object dxScoreValue = ReadFirstMember(score, "DxScore", "dxScore");
@@ -1565,13 +1591,20 @@ namespace MaiDGBridge
                     dxScore = storedDx;
                 }
             }
-            snapshot.DxScore = dxScore;
+            if (dxScore > 0 || snapshot.DxScore == 0)
+            {
+                snapshot.DxScore = dxScore;
+            }
 
             object achievementValue = InvokeNoArg(score, "GetAchivement") ??
                                       InvokeNoArg(score, "GetAchievement");
             if (achievementValue != null)
             {
-                snapshot.Achievement = ToDecimal(achievementValue);
+                decimal achievement = ToDecimal(achievementValue);
+                if (achievement > 0m || snapshot.Achievement == 0m)
+                {
+                    snapshot.Achievement = achievement;
+                }
             }
             else
             {
@@ -1579,56 +1612,14 @@ namespace MaiDGBridge
                     userScore, "achivement", "achievement", "Achievement");
                 if (storedAchievement != null)
                 {
-                    snapshot.Achievement = ToDecimal(storedAchievement) / 10000m;
+                    decimal achievement = ToDecimal(storedAchievement) / 10000m;
+                    if (achievement > 0m || snapshot.Achievement == 0m)
+                    {
+                        snapshot.Achievement = achievement;
+                    }
                 }
             }
-            snapshot.Rank = ReadScoreRank(score, userScore, snapshot.Achievement);
-        }
-
-        private static string ReadScoreRank(object score, object userScore, decimal achievement)
-        {
-            object value = ReadFirstMember(userScore, "scoreRank", "ScoreRank");
-            if (value != null)
-            {
-                string rank = ClearRankName(ToInt(value));
-                if (!string.IsNullOrEmpty(rank))
-                {
-                    return rank;
-                }
-            }
-
-            value = ReadFirstMember(score, "MusicRate", "musicRate");
-            if (value != null)
-            {
-                string rank = ClearRankName(ToInt(value));
-                if (!string.IsNullOrEmpty(rank))
-                {
-                    return rank;
-                }
-            }
-            return RankFromAchievement(achievement);
-        }
-
-        private static string ClearRankName(int rank)
-        {
-            switch (rank)
-            {
-                case 0: return "D";
-                case 1: return "C";
-                case 2: return "B";
-                case 3: return "BB";
-                case 4: return "BBB";
-                case 5: return "A";
-                case 6: return "AA";
-                case 7: return "AAA";
-                case 8: return "S";
-                case 9: return "S+";
-                case 10: return "SS";
-                case 11: return "SS+";
-                case 12: return "SSS";
-                case 13: return "SSS+";
-                default: return string.Empty;
-            }
+            snapshot.Rank = RankFromAchievement(snapshot.Achievement);
         }
 
         private static string RankFromAchievement(decimal achievement)
@@ -1822,6 +1813,19 @@ namespace MaiDGBridge
             target.Progress = source.Progress;
             target.ElapsedSeconds = source.ElapsedSeconds;
             target.DurationSeconds = source.DurationSeconds;
+        }
+
+        private static void CopyScoreValues(Snapshot source, Snapshot target)
+        {
+            target.Critical = source.Critical;
+            target.Perfect = source.Perfect;
+            target.Great = source.Great;
+            target.Good = source.Good;
+            target.Miss = source.Miss;
+            target.Combo = source.Combo;
+            target.DxScore = source.DxScore;
+            target.Achievement = source.Achievement;
+            target.Rank = source.Rank;
         }
 
         private void ApplyMetadata(Snapshot snapshot, int player)

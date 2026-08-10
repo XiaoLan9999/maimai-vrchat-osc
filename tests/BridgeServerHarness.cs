@@ -304,10 +304,35 @@ internal static class BridgeServerHarness
         public uint MaxCombo = 12;
         public uint DxScore = 123;
         public uint MusicRate = 5;
+        public FakeSessionInfo SessionInfo = new FakeSessionInfo();
 
         public decimal GetAchivement()
         {
             return 87.6543m;
+        }
+    }
+
+    private sealed class FakeSessionInfo
+    {
+        public int musicId = 24680;
+        public int difficulty = 3;
+    }
+
+    private sealed class FakeZeroResultScore
+    {
+        public bool IsEnable = true;
+        public uint CriticalNum = 0;
+        public uint PerfectNum = 0;
+        public uint GreatNum = 0;
+        public uint GoodNum = 0;
+        public uint MissNum = 0;
+        public uint MaxCombo = 0;
+        public uint DxScore = 0;
+        public FakeSessionInfo SessionInfo = new FakeSessionInfo();
+
+        public decimal GetAchivement()
+        {
+            return 0m;
         }
     }
 
@@ -344,6 +369,19 @@ internal static class BridgeServerHarness
         private readonly FakeStoredUserScore[] _userScores = {
             new FakeStoredUserScore(0, 0),
             new FakeStoredUserScore(876543, 321),
+        };
+        private readonly int _musicID = 24680;
+    }
+
+    private sealed class FakeZeroResultProcess
+    {
+        private readonly FakeZeroResultScore[] _gameScoreLists = {
+            new FakeZeroResultScore(),
+            new FakeZeroResultScore { IsEnable = false },
+        };
+        private readonly FakeStoredUserScore[] _userScores = {
+            new FakeStoredUserScore(0, 0, 0),
+            new FakeStoredUserScore(0, 0, 0),
         };
         private readonly int _musicID = 24680;
     }
@@ -432,6 +470,7 @@ internal static class BridgeServerHarness
         if (result == null || result.MusicId != 24680 || result.Critical != 1 ||
             result.Perfect != 2 || result.Great != 3 || result.Good != 4 || result.Miss != 5 ||
             result.Combo != 12 || result.DxScore != 123 || result.Achievement != 87.6543m ||
+            result.Difficulty != 3 ||
             result.Rank != "A" ||
             !result.ToJson("settle", "RESULT").Contains("\"rank\":\"A\""))
         {
@@ -443,6 +482,40 @@ internal static class BridgeServerHarness
             storedResult.DxScore != 321 || storedResult.Rank != "A")
         {
             throw new Exception("stored result score scaling failed");
+        }
+        MaiDGBridge.BridgeMod baselineBridge = new MaiDGBridge.BridgeMod();
+        System.Reflection.FieldInfo finalGameplay = typeof(MaiDGBridge.BridgeMod).GetField(
+            "_finalGameplay",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        MaiDGBridge.Snapshot[] finalSnapshots =
+            (MaiDGBridge.Snapshot[])finalGameplay.GetValue(baselineBridge);
+        finalSnapshots[0] = new MaiDGBridge.Snapshot
+        {
+            Player = 1,
+            Track = 2,
+            MusicId = 24680,
+            Difficulty = 3,
+            Chart = "MASTER",
+            Title = "Final Song",
+            Critical = 615,
+            Perfect = 417,
+            Great = 115,
+            Good = 21,
+            Miss = 32,
+            Combo = 99,
+            DxScore = 2345,
+            Achievement = 96.1716m,
+            Rank = "AAA"
+        };
+        MaiDGBridge.Snapshot preservedResult = (MaiDGBridge.Snapshot)captureResult.Invoke(
+            baselineBridge, new object[] { new FakeZeroResultProcess(), 0 });
+        if (preservedResult == null || preservedResult.Difficulty != 3 ||
+            preservedResult.Chart != "MASTER" || preservedResult.Title != "Final Song" ||
+            preservedResult.Achievement != 96.1716m || preservedResult.DxScore != 2345 ||
+            preservedResult.Critical != 615 || preservedResult.Miss != 32 ||
+            preservedResult.Rank != "AAA")
+        {
+            throw new Exception("zero result replaced final MASTER gameplay snapshot");
         }
         System.Reflection.MethodInfo rankFromAchievement = typeof(MaiDGBridge.BridgeMod).GetMethod(
             "RankFromAchievement",
