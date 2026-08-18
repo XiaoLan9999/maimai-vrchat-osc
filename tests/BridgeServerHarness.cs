@@ -592,6 +592,32 @@ internal static class BridgeServerHarness
         {
             throw new Exception("event-driven result refresh scheduling failed");
         }
+
+        System.Reflection.MethodInfo tryAcquireInstance = typeof(MaiDGBridge.BridgeMod).GetMethod(
+            "TryAcquireInstance", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        System.Reflection.MethodInfo releaseInstance = typeof(MaiDGBridge.BridgeMod).GetMethod(
+            "ReleaseInstance", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        MaiDGBridge.BridgeMod firstInstance = new MaiDGBridge.BridgeMod();
+        MaiDGBridge.BridgeMod duplicateInstance = new MaiDGBridge.BridgeMod();
+        try
+        {
+            if (!(bool)tryAcquireInstance.Invoke(firstInstance, null) ||
+                (bool)tryAcquireInstance.Invoke(duplicateInstance, null))
+            {
+                throw new Exception("single-instance bridge guard failed");
+            }
+            releaseInstance.Invoke(firstInstance, null);
+            if (!(bool)tryAcquireInstance.Invoke(duplicateInstance, null))
+            {
+                throw new Exception("single-instance bridge guard was not released");
+            }
+        }
+        finally
+        {
+            releaseInstance.Invoke(firstInstance, null);
+            releaseInstance.Invoke(duplicateInstance, null);
+        }
+
         sessionStarted.SetValue(null, false);
         MaiDGBridge.PresenceSnapshot preLogin =
             (MaiDGBridge.PresenceSnapshot)capturePresence.Invoke(bridge, null);
@@ -648,6 +674,10 @@ internal static class BridgeServerHarness
             "_hookCounts", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
         System.Reflection.FieldInfo judgePublishPending = typeof(MaiDGBridge.BridgeMod).GetField(
             "_judgePublishPending", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        System.Reflection.FieldInfo lastJudgePublish = typeof(MaiDGBridge.BridgeMod).GetField(
+            "_lastJudgePublish", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        System.Reflection.MethodInfo publishPendingJudgements = typeof(MaiDGBridge.BridgeMod).GetMethod(
+            "PublishPendingJudgements", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
         gameplayServer.Start();
         try
         {
@@ -686,16 +716,19 @@ internal static class BridgeServerHarness
                 throw new Exception("pre-judgement zero-poll capture or cached metadata failed");
             }
             bridge.OnUpdate();
-            for (int frame = 0; frame < 60; frame++)
+            long lastJudge = (long)lastJudgePublish.GetValue(bridge);
+            publishPendingJudgements.Invoke(bridge, new object[] { lastJudge + 100L, false });
+            if (!pending[0])
             {
-                bridge.OnUpdate();
+                throw new Exception("judgement publish interval was bypassed");
             }
+            publishPendingJudgements.Invoke(bridge, new object[] { lastJudge + 250L, false });
             if (pending[0] || Manager.GamePlayManager.Instance.GetGameScoreCalls != 1 ||
                 hooked[0].DxScore != 1234 || hooked[0].Achievement != 58.2657m ||
                 hooked[0].Progress != 0.5m || hooked[0].ElapsedSeconds != 60 ||
                 hooked[0].DurationSeconds != 120)
             {
-                throw new Exception("dense judgement batching or one-second gameplay metrics sampling failed");
+                throw new Exception("rate-limited judgement batching or gameplay metrics sampling failed");
             }
         }
         finally

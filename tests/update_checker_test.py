@@ -33,11 +33,11 @@ def opener_for(value):
     return open_url
 
 
-def manifest(version="2.1.11"):
+def manifest(version="2.1.12"):
     return {
         "schema_version": 1,
         "app_version": version,
-        "bridge_version": "1.4.15",
+        "bridge_version": "1.4.16",
         "release_url": (
             "https://github.com/XiaoLan9999/maimai-vrchat-osc/releases/tag/v{0}"
         ).format(version),
@@ -45,13 +45,13 @@ def manifest(version="2.1.11"):
 
 
 def main():
-    assert is_newer_version("2.1.11", "2.1.10")
+    assert is_newer_version("2.1.12", "2.1.11")
     assert is_newer_version("2.2", "2.1.99")
-    assert not is_newer_version("2.1.11", "2.1.11.0")
+    assert not is_newer_version("2.1.12", "2.1.12.0")
 
     available = check_for_updates("2.1.10", opener=opener_for(manifest()))
     assert available["state"] == "update", available
-    current = check_for_updates("2.1.11", opener=opener_for(manifest()))
+    current = check_for_updates("2.1.12", opener=opener_for(manifest()))
     assert current["state"] == "current", current
 
     invalid = manifest()

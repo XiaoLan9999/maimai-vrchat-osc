@@ -12,7 +12,7 @@ using HarmonyLib;
 using Manager;
 using MelonLoader;
 
-[assembly: MelonInfo(typeof(MaiDGBridge.BridgeMod), "XiaoLanMaiBrdge", "1.4.15", "XiaoLan9999", "")]
+[assembly: MelonInfo(typeof(MaiDGBridge.BridgeMod), "XiaoLanMaiBrdge", "1.4.16", "XiaoLan9999", "")]
 [assembly: MelonGame("sega-interactive", "Sinmai")]
 
 namespace MaiDGBridge
@@ -20,6 +20,12 @@ namespace MaiDGBridge
     public sealed class BridgeMod : MelonMod
     {
         private const int GameplayMetricsIntervalMs = 1000;
+        private const string InstanceSemaphoreName = "XiaoLanMaiBrdge.Singleton";
+        private static readonly object MemberCacheLock = new object();
+        private static readonly Dictionary<System.Type, Dictionary<string, MemberInfo>> InstanceMemberCache =
+            new Dictionary<System.Type, Dictionary<string, MemberInfo>>();
+        private static readonly Dictionary<System.Type, Dictionary<string, MemberInfo>> StaticMemberCache =
+            new Dictionary<System.Type, Dictionary<string, MemberInfo>>();
         private readonly Snapshot[] _last = new Snapshot[2];
         private readonly Snapshot[] _hookCounts = new Snapshot[2];
         private readonly bool[] _judgePublishPending = new bool[2];
@@ -40,6 +46,8 @@ namespace MaiDGBridge
         private static object _resultProcess;
         private static bool _sessionStarted;
         private SseServer _server;
+        private Semaphore _instanceSemaphore;
+        private bool _ownsInstanceSemaphore;
         private bool _wasInGame;
         private bool _judgeHookObserved;
         private bool _metadataWarningLogged;
@@ -55,6 +63,7 @@ namespace MaiDGBridge
         private string _cachedUserName = string.Empty;
         private long _lastPresencePublish;
         private long _lastResultPublish;
+        private long _lastJudgePublish;
         private long _lastGameplayMetricsCapture;
         private long _lastErrorLog;
         private long _resultHoldUntil;
@@ -63,7 +72,6 @@ namespace MaiDGBridge
 
         public override void OnInitializeMelon()
         {
-            _active = this;
             BridgeConfig config = BridgeConfig.Load(Path.Combine(Environment.CurrentDirectory, "XiaoLanMaiBrdge.ini"));
             _publishIntervalMs = config.PublishIntervalMs;
             _presenceIntervalMs = config.PresenceIntervalMs;
@@ -73,6 +81,14 @@ namespace MaiDGBridge
                 MelonLogger.Msg("XiaoLanMaiBrdge is disabled by XiaoLanMaiBrdge.ini");
                 return;
             }
+
+            if (!TryAcquireInstance())
+            {
+                MelonLogger.Warning("XiaoLanMaiBrdge duplicate instance ignored; remove old bridge DLLs from Mods");
+                return;
+            }
+
+            _active = this;
 
             try
             {
@@ -132,16 +148,17 @@ namespace MaiDGBridge
                         _finalGameplay[1] = null;
                         _resultHoldUntil = 0;
                         _lastGameplayMetricsCapture = now - GameplayMetricsIntervalMs;
+                        _lastJudgePublish = now;
                         _server.PublishJson("{\"event\":\"state\",\"status\":\"PLAYING\"}");
-                        PublishGameplayStart();
+                        PublishGameplayStart(now);
                     }
 
                     CaptureGameplayMetrics(now);
-                    PublishPendingJudgements();
+                    PublishPendingJudgements(now, false);
                 }
                 else if (_wasInGame)
                 {
-                    PublishPendingJudgements();
+                    PublishPendingJudgements(now, true);
                     for (int player = 0; player < 2; player++)
                     {
                         Snapshot result = RefreshFinalGameplayScore(player, _last[player]);
@@ -213,6 +230,50 @@ namespace MaiDGBridge
             {
                 server.Stop();
             }
+            ReleaseInstance();
+        }
+
+        private bool TryAcquireInstance()
+        {
+            try
+            {
+                bool createdNew;
+                _instanceSemaphore = new Semaphore(1, 1, InstanceSemaphoreName, out createdNew);
+                _ownsInstanceSemaphore = _instanceSemaphore.WaitOne(0, false);
+                if (!_ownsInstanceSemaphore)
+                {
+                    _instanceSemaphore.Close();
+                    _instanceSemaphore = null;
+                }
+                return _ownsInstanceSemaphore;
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning("XiaoLanMaiBrdge single-instance guard unavailable: " + ex.Message);
+                return true;
+            }
+        }
+
+        private void ReleaseInstance()
+        {
+            Semaphore semaphore = _instanceSemaphore;
+            _instanceSemaphore = null;
+            if (semaphore == null)
+            {
+                return;
+            }
+            if (_ownsInstanceSemaphore)
+            {
+                _ownsInstanceSemaphore = false;
+                try
+                {
+                    semaphore.Release();
+                }
+                catch
+                {
+                }
+            }
+            semaphore.Close();
         }
 
         private void PatchJudgeResults()
@@ -1417,7 +1478,7 @@ namespace MaiDGBridge
             }
         }
 
-        private void PublishGameplayStart()
+        private void PublishGameplayStart(long now)
         {
             uint track = GameManager.MusicTrackNumber;
             for (int player = 0; player < 2; player++)
@@ -1437,10 +1498,17 @@ namespace MaiDGBridge
                 _server.PublishJson(counts.ToJson("counts", "PLAYING"));
                 _judgePublishPending[player] = false;
             }
+            _lastJudgePublish = now;
         }
 
-        private void PublishPendingJudgements()
+        private void PublishPendingJudgements(long now, bool force)
         {
+            if (!force && now - _lastJudgePublish < _publishIntervalMs)
+            {
+                return;
+            }
+
+            bool published = false;
             for (int player = 0; player < 2; player++)
             {
                 if (!_judgePublishPending[player])
@@ -1452,8 +1520,13 @@ namespace MaiDGBridge
                 if (counts != null)
                 {
                     _server.PublishJson(counts.ToJson("counts", "PLAYING"));
+                    published = true;
                 }
                 _judgePublishPending[player] = false;
+            }
+            if (published)
+            {
+                _lastJudgePublish = now;
             }
         }
 
@@ -1950,71 +2023,89 @@ namespace MaiDGBridge
             {
                 return null;
             }
-            System.Type type = target.GetType();
-            BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
-            while (type != null)
+            MemberInfo member = ResolveMember(target.GetType(), name, false);
+            try
             {
-                PropertyInfo property = type.GetProperty(name, flags);
+                PropertyInfo property = member as PropertyInfo;
                 if (property != null)
                 {
-                    try
-                    {
-                        return property.GetValue(target, null);
-                    }
-                    catch
-                    {
-                        return null;
-                    }
+                    return property.GetValue(target, null);
                 }
-                FieldInfo field = type.GetField(name, flags);
-                if (field != null)
-                {
-                    try
-                    {
-                        return field.GetValue(target);
-                    }
-                    catch
-                    {
-                        return null;
-                    }
-                }
-                type = type.BaseType;
+                FieldInfo field = member as FieldInfo;
+                return field == null ? null : field.GetValue(target);
             }
-            return null;
+            catch
+            {
+                return null;
+            }
         }
 
         private static object ReadStaticMember(System.Type type, string name)
         {
-            BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
-            while (type != null)
+            MemberInfo member = ResolveMember(type, name, true);
+            try
             {
-                PropertyInfo property = type.GetProperty(name, flags);
+                PropertyInfo property = member as PropertyInfo;
                 if (property != null)
                 {
-                    try
-                    {
-                        return property.GetValue(null, null);
-                    }
-                    catch
-                    {
-                        return null;
-                    }
+                    return property.GetValue(null, null);
                 }
-                FieldInfo field = type.GetField(name, flags);
-                if (field != null)
-                {
-                    try
-                    {
-                        return field.GetValue(null);
-                    }
-                    catch
-                    {
-                        return null;
-                    }
-                }
-                type = type.BaseType;
+                FieldInfo field = member as FieldInfo;
+                return field == null ? null : field.GetValue(null);
             }
-            return null;
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static MemberInfo ResolveMember(System.Type type, string name, bool isStatic)
+        {
+            if (type == null || string.IsNullOrEmpty(name))
+            {
+                return null;
+            }
+
+            Dictionary<System.Type, Dictionary<string, MemberInfo>> cache =
+                isStatic ? StaticMemberCache : InstanceMemberCache;
+            lock (MemberCacheLock)
+            {
+                Dictionary<string, MemberInfo> members;
+                if (!cache.TryGetValue(type, out members))
+                {
+                    members = new Dictionary<string, MemberInfo>(StringComparer.Ordinal);
+                    cache[type] = members;
+                }
+
+                MemberInfo cached;
+                if (members.TryGetValue(name, out cached))
+                {
+                    return cached;
+                }
+
+                BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic |
+                                     (isStatic ? BindingFlags.Static : BindingFlags.Instance);
+                System.Type current = type;
+                while (current != null)
+                {
+                    PropertyInfo property = current.GetProperty(name, flags);
+                    if (property != null)
+                    {
+                        members[name] = property;
+                        return property;
+                    }
+                    FieldInfo field = current.GetField(name, flags);
+                    if (field != null)
+                    {
+                        members[name] = field;
+                        return field;
+                    }
+                    current = current.BaseType;
+                }
+
+                members[name] = null;
+                return null;
+            }
         }
 
         private static string ReadStringId(object target, string name)

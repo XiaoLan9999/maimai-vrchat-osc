@@ -378,8 +378,8 @@ def test_bridge_inspection():
         (payload / "XiaoLanMaiBrdge.dll").write_bytes(bundled)
         (payload / "XiaoLanMaiBrdge.ini").write_text("Enabled=true\n", encoding="utf-8")
         (payload / "bridge.json").write_text(json.dumps({
-            "plugin_version": "2.1.11",
-            "bridge_version": "1.4.15",
+            "plugin_version": "2.1.12",
+            "bridge_version": "1.4.16",
             "sha256": bundled_hash,
         }), encoding="utf-8")
 
@@ -416,20 +416,20 @@ def test_bridge_inspection():
             str(resource), str(package), auto_detect=False, running_packages=[]
         )
         assert current["state"] == "current", current
-        assert current["installed_version"] == "1.4.15", current
+        assert current["installed_version"] == "1.4.16", current
 
         future = b"future bridge"
         future_hash = hashlib.sha256(future).hexdigest()
         dll.write_bytes(future)
         marker.write_text(json.dumps({
-            "bridge_version": "1.4.16",
+            "bridge_version": "1.4.17",
             "dll_sha256": future_hash,
         }), encoding="utf-8")
         no_downgrade = inspect_bridge_installation(
             str(resource), str(package), auto_detect=False, running_packages=[]
         )
         assert no_downgrade["state"] == "current", no_downgrade
-        assert no_downgrade["installed_version"] == "1.4.16", no_downgrade
+        assert no_downgrade["installed_version"] == "1.4.17", no_downgrade
 
 
 if __name__ == "__main__":

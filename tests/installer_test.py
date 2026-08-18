@@ -74,6 +74,16 @@ def main():
         assert second["state"] == "ok", second
         assert not second["backup"], second
 
+        (package / "Mods" / "MaiDGBridge.dll").write_bytes(b"late legacy bridge")
+        conflict = ensure_bridge_installed(
+            str(plugin), str(package), auto_detect=False, running_packages=[]
+        )
+        assert conflict["state"] == "ok", conflict
+        assert not (package / "Mods" / "MaiDGBridge.dll").exists()
+        assert (
+            pathlib.Path(conflict["backup"]) / "Mods" / "MaiDGBridge.dll"
+        ).read_bytes() == b"late legacy bridge"
+
         write_payload(plugin, "1.2.1", b"bridge version 2")
         deferred = ensure_bridge_installed(
             str(plugin),
