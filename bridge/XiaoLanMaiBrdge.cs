@@ -12,7 +12,7 @@ using HarmonyLib;
 using Manager;
 using MelonLoader;
 
-[assembly: MelonInfo(typeof(MaiDGBridge.BridgeMod), "XiaoLanMaiBrdge", "1.4.16", "XiaoLan9999", "")]
+[assembly: MelonInfo(typeof(MaiDGBridge.BridgeMod), "XiaoLanMaiBrdge", "1.4.17", "XiaoLan9999", "")]
 [assembly: MelonGame("sega-interactive", "Sinmai")]
 
 namespace MaiDGBridge
@@ -20,6 +20,9 @@ namespace MaiDGBridge
     public sealed class BridgeMod : MelonMod
     {
         private const int GameplayMetricsIntervalMs = 1000;
+        private const int GameplayMetricsWarmupMs = 3000;
+        private const int SlowPathLogIntervalMs = 5000;
+        private const double SlowPathThresholdMs = 8.0;
         private const string InstanceSemaphoreName = "XiaoLanMaiBrdge.Singleton";
         private static readonly object MemberCacheLock = new object();
         private static readonly Dictionary<System.Type, Dictionary<string, MemberInfo>> InstanceMemberCache =
@@ -65,7 +68,11 @@ namespace MaiDGBridge
         private long _lastResultPublish;
         private long _lastJudgePublish;
         private long _lastGameplayMetricsCapture;
+        private long _gameplayMetricsReadyAt;
         private long _lastErrorLog;
+        private long _lastSlowUpdateLog;
+        private long _lastSlowMetricsLog;
+        private long _lastSlowJudgeLog;
         private long _resultHoldUntil;
         private int _publishIntervalMs = 250;
         private int _presenceIntervalMs = 250;
@@ -101,6 +108,7 @@ namespace MaiDGBridge
                 PatchAuxiliaryPresenceProcesses();
                 PatchMusicSelect();
                 PatchResultProcess();
+                ResolveGameplayTimeMethods();
                 MelonLogger.Msg("XiaoLanMaiBrdge listening on http://127.0.0.1:" + config.Port + "/events");
             }
             catch (Exception ex)
@@ -117,6 +125,7 @@ namespace MaiDGBridge
                 return;
             }
 
+            long updateStarted = Stopwatch.GetTimestamp();
             try
             {
                 bool inGame = GameManager.IsInGame;
@@ -148,6 +157,7 @@ namespace MaiDGBridge
                         _finalGameplay[1] = null;
                         _resultHoldUntil = 0;
                         _lastGameplayMetricsCapture = now - GameplayMetricsIntervalMs;
+                        _gameplayMetricsReadyAt = now + GameplayMetricsWarmupMs;
                         _lastJudgePublish = now;
                         _server.PublishJson("{\"event\":\"state\",\"status\":\"PLAYING\"}");
                         PublishGameplayStart(now);
@@ -194,6 +204,10 @@ namespace MaiDGBridge
                     MelonLogger.Warning("XiaoLanMaiBrdge capture error: " + ex.Message);
                     _lastErrorLog = now;
                 }
+            }
+            finally
+            {
+                LogSlowPath("update", updateStarted, ref _lastSlowUpdateLog);
             }
         }
 
@@ -1532,11 +1546,13 @@ namespace MaiDGBridge
 
         private void CaptureGameplayMetrics(long now)
         {
-            if (now - _lastGameplayMetricsCapture < GameplayMetricsIntervalMs)
+            if (now < _gameplayMetricsReadyAt ||
+                now - _lastGameplayMetricsCapture < GameplayMetricsIntervalMs)
             {
                 return;
             }
 
+            long metricsStarted = Stopwatch.GetTimestamp();
             bool sampled = false;
             uint track = GameManager.MusicTrackNumber;
             for (int player = 0; player < 2; player++)
@@ -1585,6 +1601,7 @@ namespace MaiDGBridge
             {
                 _lastGameplayMetricsCapture = now;
             }
+            LogSlowPath("gameplay metrics", metricsStarted, ref _lastSlowMetricsLog);
         }
 
         private Snapshot RefreshFinalGameplayScore(int player, Snapshot snapshot)
@@ -1722,23 +1739,7 @@ namespace MaiDGBridge
             progress = 0m;
             elapsedSeconds = 0;
             durationSeconds = 0;
-            if (!_gameplayTimeResolved)
-            {
-                System.Type notesManagerType = AccessTools.TypeByName("Manager.NotesManager");
-                if (notesManagerType != null)
-                {
-                    _notesManagerInstanceMethod = notesManagerType.GetMethod(
-                        "Instance",
-                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static,
-                        null,
-                        new System.Type[] { typeof(int) },
-                        null);
-                    _notesCurrentMsecMethod = FindMethod(notesManagerType, "GetCurrentMsec", true);
-                    _notesPlayFirstMsecMethod = FindMethod(notesManagerType, "getPlayFirstMsec", false);
-                    _notesPlayFinalMsecMethod = FindMethod(notesManagerType, "getPlayFinalMsec", false);
-                }
-                _gameplayTimeResolved = true;
-            }
+            ResolveGameplayTimeMethods();
 
             if (_notesManagerInstanceMethod == null || _notesCurrentMsecMethod == null ||
                 _notesPlayFirstMsecMethod == null || _notesPlayFinalMsecMethod == null)
@@ -1777,6 +1778,49 @@ namespace MaiDGBridge
             return true;
         }
 
+        private void ResolveGameplayTimeMethods()
+        {
+            if (_gameplayTimeResolved)
+            {
+                return;
+            }
+
+            System.Type notesManagerType = AccessTools.TypeByName("Manager.NotesManager");
+            if (notesManagerType != null)
+            {
+                _notesManagerInstanceMethod = notesManagerType.GetMethod(
+                    "Instance",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static,
+                    null,
+                    new System.Type[] { typeof(int) },
+                    null);
+                _notesCurrentMsecMethod = FindMethod(notesManagerType, "GetCurrentMsec", true);
+                _notesPlayFirstMsecMethod = FindMethod(notesManagerType, "getPlayFirstMsec", false);
+                _notesPlayFinalMsecMethod = FindMethod(notesManagerType, "getPlayFinalMsec", false);
+            }
+            _gameplayTimeResolved = true;
+        }
+
+        private void LogSlowPath(string path, long started, ref long lastLog)
+        {
+            long now = _clock.ElapsedMilliseconds;
+            if (now - lastLog < SlowPathLogIntervalMs)
+            {
+                return;
+            }
+
+            double elapsedMs = (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
+            if (elapsedMs < SlowPathThresholdMs)
+            {
+                return;
+            }
+
+            lastLog = now;
+            MelonLogger.Warning(
+                "XiaoLanMaiBrdge slow " + path + ": " +
+                elapsedMs.ToString("0.0", CultureInfo.InvariantCulture) + " ms");
+        }
+
         private static void JudgeResultPostfix(
             int monitorIndex,
             NoteScore.EScoreType type,
@@ -1800,6 +1844,7 @@ namespace MaiDGBridge
                 return;
             }
 
+            long judgeStarted = Stopwatch.GetTimestamp();
             uint track = GameManager.MusicTrackNumber;
             Snapshot counts = _hookCounts[monitorIndex];
             if (counts == null || counts.Track != track)
@@ -1855,6 +1900,7 @@ namespace MaiDGBridge
             }
             _last[monitorIndex] = counts;
             _judgePublishPending[monitorIndex] = true;
+            LogSlowPath("judgement", judgeStarted, ref _lastSlowJudgeLog);
         }
 
         private void ApplyIdentity(Snapshot snapshot)

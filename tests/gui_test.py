@@ -32,10 +32,10 @@ def main():
     gui_module.save_config = fake_save
     gui_module.check_for_updates = lambda _version: {
         "state": "current",
-        "current_version": "2.1.12",
-        "latest_version": "2.1.12",
-        "bridge_version": "1.4.16",
-        "release_url": "https://github.com/XiaoLan9999/maimai-vrchat-osc/releases/tag/v2.1.12",
+        "current_version": "2.1.13",
+        "latest_version": "2.1.13",
+        "bridge_version": "1.4.17",
+        "release_url": "https://github.com/XiaoLan9999/maimai-vrchat-osc/releases/tag/v2.1.13",
     }
     gui_module.inspect_bridge_installation = lambda *_args, **_kwargs: {
         "state": "pending",
@@ -43,7 +43,7 @@ def main():
         "detected": False,
         "needs_update": False,
         "installed_version": "",
-        "available_version": "1.4.16",
+        "available_version": "1.4.17",
         "game_running": False,
     }
     root = tk.Tk()
@@ -87,7 +87,7 @@ def main():
         assert len(saved) > count
         assert saved[-1]["osc_host"] == "10.0.0.8"
         assert app.save_state_var.get() == "已自动保存"
-        assert app.status_vars["update"].get() == "当前 2.1.12 已是最新版"
+        assert app.status_vars["update"].get() == "当前 2.1.13 已是最新版"
         app.close()
     finally:
         gui_module.save_config = original_save

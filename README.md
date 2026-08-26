@@ -14,7 +14,7 @@ Chatbox sender to disable.
 
 ## Installation
 
-1. Extract `maimai-vrchat-osc-2.1.12-win64.zip`.
+1. Extract `maimai-vrchat-osc-2.1.13-win64.zip`.
 2. Run `MaimaiVrchatOsc.exe`.
 3. Select the game `Package` directory containing `Sinmai.exe`.
 4. Set the IPv4 address of the VRChat computer. Use `127.0.0.1` on the same
@@ -111,7 +111,7 @@ all keepalive traffic. It resumes automatically when cabinet activity returns.
 
 ## Bridge coexistence
 
-The application bundles `XiaoLanMaiBrdge 1.4.16`. Installation verifies SHA-256,
+The application bundles `XiaoLanMaiBrdge 1.4.17`. Installation verifies SHA-256,
 backs up replaced files under `Package/XiaoLanMaiBrdge.backups/<timestamp>`, and
 never replaces a DLL while the game is running. Upgrades detect and back up the
 legacy `MaiDGBridge.dll`, configuration, and marker before removing the legacy
@@ -119,9 +119,10 @@ files, so only `XiaoLanMaiBrdge.dll` is loaded. A same-version bridge installed
 by DGHub is accepted by version and its recorded hash, preventing replacement
 loops between the two applications.
 
-Version `1.4.16` adds a process-wide single-instance guard, caches reflected
-members, and batches live judgement events by `PublishIntervalMs`. Every
-judgement is still counted and the final pending totals are flushed at result.
+Version `1.4.17` keeps gameplay score/time polling out of the first three seconds,
+resolves time-access methods during bridge startup, and logs only bridge calls that
+exceed 8 ms. Every judgement is still counted and the final pending totals are
+flushed at result.
 
 Compile compatibility is covered for `SDGB1.50`, `SDGB1.55`, and `SDEZ160`.
 The target 1.55 package has runtime SSE and OSC coverage.
@@ -137,7 +138,7 @@ Outputs:
 
 ```text
 dist\standalone-stage\MaimaiVrchatOsc.exe
-dist\maimai-vrchat-osc-2.1.12-win64.zip
+dist\maimai-vrchat-osc-2.1.13-win64.zip
 ```
 
 The legacy DGHub-only build remains available as `build-dghub-plugin.ps1` and

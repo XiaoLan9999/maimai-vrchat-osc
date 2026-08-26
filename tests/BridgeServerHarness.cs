@@ -388,6 +388,23 @@ internal static class BridgeServerHarness
 
     public static int Main()
     {
+        try
+        {
+            return Run();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.Message);
+            if (ex.InnerException != null)
+            {
+                Console.Error.WriteLine(ex.InnerException.Message);
+            }
+            return 1;
+        }
+    }
+
+    private static int Run()
+    {
         System.Reflection.MethodInfo readVersion = typeof(MaiDGBridge.BridgeMod).GetMethod(
             "ReadVersion",
             System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
@@ -676,6 +693,8 @@ internal static class BridgeServerHarness
             "_judgePublishPending", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
         System.Reflection.FieldInfo lastJudgePublish = typeof(MaiDGBridge.BridgeMod).GetField(
             "_lastJudgePublish", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        System.Reflection.FieldInfo gameplayMetricsReadyAt = typeof(MaiDGBridge.BridgeMod).GetField(
+            "_gameplayMetricsReadyAt", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
         System.Reflection.MethodInfo publishPendingJudgements = typeof(MaiDGBridge.BridgeMod).GetMethod(
             "PublishPendingJudgements", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
         gameplayServer.Start();
@@ -715,6 +734,7 @@ internal static class BridgeServerHarness
             {
                 throw new Exception("pre-judgement zero-poll capture or cached metadata failed");
             }
+            gameplayMetricsReadyAt.SetValue(bridge, 0L);
             bridge.OnUpdate();
             long lastJudge = (long)lastJudgePublish.GetValue(bridge);
             publishPendingJudgements.Invoke(bridge, new object[] { lastJudge + 100L, false });

@@ -378,8 +378,8 @@ def test_bridge_inspection():
         (payload / "XiaoLanMaiBrdge.dll").write_bytes(bundled)
         (payload / "XiaoLanMaiBrdge.ini").write_text("Enabled=true\n", encoding="utf-8")
         (payload / "bridge.json").write_text(json.dumps({
-            "plugin_version": "2.1.12",
-            "bridge_version": "1.4.16",
+            "plugin_version": "2.1.13",
+            "bridge_version": "1.4.17",
             "sha256": bundled_hash,
         }), encoding="utf-8")
 
@@ -416,7 +416,7 @@ def test_bridge_inspection():
             str(resource), str(package), auto_detect=False, running_packages=[]
         )
         assert current["state"] == "current", current
-        assert current["installed_version"] == "1.4.16", current
+        assert current["installed_version"] == "1.4.17", current
 
         future = b"future bridge"
         future_hash = hashlib.sha256(future).hexdigest()
