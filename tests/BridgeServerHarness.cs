@@ -579,9 +579,43 @@ internal static class BridgeServerHarness
         presenceRefreshRequested.SetValue(bridge, true);
         if (!(bool)shouldCapturePresence.Invoke(bridge, new object[] { 1101L }) ||
             (bool)shouldCapturePresence.Invoke(bridge, new object[] { 1102L }) ||
-            !(bool)shouldCapturePresence.Invoke(bridge, new object[] { 1351L }))
+            (bool)shouldCapturePresence.Invoke(bridge, new object[] { 2100L }) ||
+            !(bool)shouldCapturePresence.Invoke(bridge, new object[] { 2101L }))
         {
             throw new Exception("event-driven presence refresh scheduling failed");
+        }
+
+        System.Reflection.MethodInfo storeSelectedPresence = typeof(MaiDGBridge.BridgeMod).GetMethod(
+            "StoreSelectedPresenceMetadata",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        System.Reflection.MethodInfo trySelectedPresence = typeof(MaiDGBridge.BridgeMod).GetMethod(
+            "TryApplySelectedPresenceMetadata",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        storeSelectedPresence.Invoke(bridge, new object[] {
+            new MaiDGBridge.PresenceSnapshot
+            {
+                MusicId = 13579,
+                DifficultyId = 3,
+                Difficulty = "MASTER",
+                Title = "Cached fallback",
+                Level = "14+",
+                Constant = 14.8m
+            },
+            4
+        });
+        MaiDGBridge.PresenceSnapshot cachedPresence = new MaiDGBridge.PresenceSnapshot
+        {
+            MusicId = 13579,
+            GameDifficultyId = 4
+        };
+        if (!(bool)trySelectedPresence.Invoke(bridge, new object[] { cachedPresence, 4 }) ||
+            cachedPresence.DifficultyId != 3 || cachedPresence.Difficulty != "MASTER" ||
+            cachedPresence.Title != "Cached fallback" || cachedPresence.Constant != 14.8m ||
+            (bool)trySelectedPresence.Invoke(
+                bridge,
+                new object[] { new MaiDGBridge.PresenceSnapshot { MusicId = 13579 }, 3 }))
+        {
+            throw new Exception("selected metadata cache invalidation failed");
         }
         System.Reflection.MethodInfo shouldCaptureResult = typeof(MaiDGBridge.BridgeMod).GetMethod(
             "ShouldCaptureResult",

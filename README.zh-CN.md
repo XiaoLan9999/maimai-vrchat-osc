@@ -11,7 +11,7 @@
 
 ## 安装
 
-1. 解压 `maimai-vrchat-osc-2.1.13-win64.zip`。
+1. 解压 `maimai-vrchat-osc-2.1.14-win64.zip`。
 2. 运行 `MaimaiVrchatOsc.exe`。
 3. 选择包含 `Sinmai.exe` 的游戏 `Package` 目录。
 4. 填写运行 VRChat 的电脑 IPv4；同机填写 `127.0.0.1`，局域网电脑填写其地址，
@@ -105,7 +105,7 @@ VRChat 中还需要打开 `Action Menu > OSC > Enabled`，接收电脑的专用�
 
 ## 桥接与共存
 
-软件内置 `XiaoLanMaiBrdge 1.4.17`，安装前会校验 SHA-256，并将旧文件备份到：
+软件内置 `XiaoLanMaiBrdge 1.4.18`，安装前会校验 SHA-256，并将旧文件备份到：
 
 ```text
 Package\XiaoLanMaiBrdge.backups\<时间戳>
@@ -116,7 +116,7 @@ Package\XiaoLanMaiBrdge.backups\<时间戳>
 独立程序会接受 DGHub 安装的同版本桥接，即使两个发布包里的 DLL 构建哈希不同，
 也不会反复互相覆盖。
 
-`1.4.17` 将实时成绩和歌曲进度采样延后到开局三秒后，在桥接启动时预解析时间读取方法，并仅记录超过 8 ms 的桥接慢调用；判定仍逐个累计，结算前会强制发送最终值。
+`1.4.18` 会缓存选歌元数据、反射方法和整数索引器，合并倒计时与无限计时状态的对象遍历，将空用户名重试和非选歌界面轮询限制为每秒一次。选歌和判定更新仍保持原有响应速度，以减少歌曲开始前的主线程工作和 Mono 短期对象分配。
 
 已完成编译兼容检查：
 
@@ -137,7 +137,7 @@ python -m pip install --target .builddeps -r requirements-build.txt
 
 ```text
 dist\standalone-stage\MaimaiVrchatOsc.exe
-dist\maimai-vrchat-osc-2.1.13-win64.zip
+dist\maimai-vrchat-osc-2.1.14-win64.zip
 ```
 
 旧的 DGHub-only 插件构建脚本保留为 `build-dghub-plugin.ps1`，`v1.4.3` 及更早

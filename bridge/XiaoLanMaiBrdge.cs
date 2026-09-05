@@ -12,7 +12,7 @@ using HarmonyLib;
 using Manager;
 using MelonLoader;
 
-[assembly: MelonInfo(typeof(MaiDGBridge.BridgeMod), "XiaoLanMaiBrdge", "1.4.17", "XiaoLan9999", "")]
+[assembly: MelonInfo(typeof(MaiDGBridge.BridgeMod), "XiaoLanMaiBrdge", "1.4.18", "XiaoLan9999", "")]
 [assembly: MelonGame("sega-interactive", "Sinmai")]
 
 namespace MaiDGBridge
@@ -21,6 +21,8 @@ namespace MaiDGBridge
     {
         private const int GameplayMetricsIntervalMs = 1000;
         private const int GameplayMetricsWarmupMs = 3000;
+        private const int IdlePresenceIntervalMs = 1000;
+        private const int UserNameRetryIntervalMs = 1000;
         private const int SlowPathLogIntervalMs = 5000;
         private const double SlowPathThresholdMs = 8.0;
         private const string InstanceSemaphoreName = "XiaoLanMaiBrdge.Singleton";
@@ -29,12 +31,18 @@ namespace MaiDGBridge
             new Dictionary<System.Type, Dictionary<string, MemberInfo>>();
         private static readonly Dictionary<System.Type, Dictionary<string, MemberInfo>> StaticMemberCache =
             new Dictionary<System.Type, Dictionary<string, MemberInfo>>();
+        private static readonly Dictionary<MethodCacheKey, MethodInfo> MethodCache =
+            new Dictionary<MethodCacheKey, MethodInfo>();
+        private static readonly Dictionary<System.Type, PropertyInfo> IntegerIndexerCache =
+            new Dictionary<System.Type, PropertyInfo>();
         private readonly Snapshot[] _last = new Snapshot[2];
         private readonly Snapshot[] _hookCounts = new Snapshot[2];
         private readonly bool[] _judgePublishPending = new bool[2];
         private readonly Snapshot[] _lastResult = new Snapshot[2];
         private readonly Snapshot[] _finalGameplay = new Snapshot[2];
         private Snapshot _selectedMetadata;
+        private PresenceSnapshot _selectedPresenceMetadata;
+        private int _selectedPresenceRequestedDifficulty = -1;
         private readonly Stopwatch _clock = Stopwatch.StartNew();
         private static BridgeMod _active;
         private static object _advertiseProcess;
@@ -65,6 +73,7 @@ namespace MaiDGBridge
         private string _cachedVersion = string.Empty;
         private string _cachedUserName = string.Empty;
         private long _lastPresencePublish;
+        private long _lastUserNameRead;
         private long _lastResultPublish;
         private long _lastJudgePublish;
         private long _lastGameplayMetricsCapture;
@@ -76,6 +85,60 @@ namespace MaiDGBridge
         private long _resultHoldUntil;
         private int _publishIntervalMs = 250;
         private int _presenceIntervalMs = 250;
+
+        private struct MethodCacheKey : IEquatable<MethodCacheKey>
+        {
+            private readonly System.Type _type;
+            private readonly string _name;
+            private readonly bool _isStatic;
+            private readonly int _argumentCount;
+            private readonly System.Type _argument0;
+            private readonly System.Type _argument1;
+
+            public MethodCacheKey(
+                System.Type type,
+                string name,
+                bool isStatic,
+                int argumentCount,
+                System.Type argument0,
+                System.Type argument1)
+            {
+                _type = type;
+                _name = name;
+                _isStatic = isStatic;
+                _argumentCount = argumentCount;
+                _argument0 = argument0;
+                _argument1 = argument1;
+            }
+
+            public bool Equals(MethodCacheKey other)
+            {
+                return ReferenceEquals(_type, other._type) &&
+                       string.Equals(_name, other._name, StringComparison.Ordinal) &&
+                       _isStatic == other._isStatic &&
+                       _argumentCount == other._argumentCount &&
+                       ReferenceEquals(_argument0, other._argument0) &&
+                       ReferenceEquals(_argument1, other._argument1);
+            }
+
+            public override bool Equals(object value)
+            {
+                return value is MethodCacheKey && Equals((MethodCacheKey)value);
+            }
+
+            public override int GetHashCode()
+            {
+                unchecked
+                {
+                    int hash = _type == null ? 0 : _type.GetHashCode();
+                    hash = (hash * 397) ^ (_name == null ? 0 : _name.GetHashCode());
+                    hash = (hash * 397) ^ (_isStatic ? 1 : 0);
+                    hash = (hash * 397) ^ _argumentCount;
+                    hash = (hash * 397) ^ (_argument0 == null ? 0 : _argument0.GetHashCode());
+                    return (hash * 397) ^ (_argument1 == null ? 0 : _argument1.GetHashCode());
+                }
+            }
+        }
 
         public override void OnInitializeMelon()
         {
@@ -346,7 +409,10 @@ namespace MaiDGBridge
 
         private bool ShouldCapturePresence(long now)
         {
-            if (!_presenceRefreshRequested && now - _lastPresencePublish < _presenceIntervalMs)
+            int interval = _musicSelectProcess == null
+                ? Math.Max(_presenceIntervalMs, IdlePresenceIntervalMs)
+                : _presenceIntervalMs;
+            if (!_presenceRefreshRequested && now - _lastPresencePublish < interval)
             {
                 return false;
             }
@@ -434,6 +500,8 @@ namespace MaiDGBridge
             {
                 active._cachedUserName = string.Empty;
                 active._selectedMetadata = null;
+                active._selectedPresenceMetadata = null;
+                active._selectedPresenceRequestedDifficulty = -1;
                 active._resultHoldUntil = 0;
                 active._lastResult[0] = null;
                 active._lastResult[1] = null;
@@ -647,6 +715,12 @@ namespace MaiDGBridge
         private static void MusicSelectStartPostfix(object __instance)
         {
             _musicSelectProcess = __instance;
+            BridgeMod active = _active;
+            if (active != null)
+            {
+                active._selectedPresenceMetadata = null;
+                active._selectedPresenceRequestedDifficulty = -1;
+            }
             ActivateSession();
         }
 
@@ -915,8 +989,11 @@ namespace MaiDGBridge
             presence.Version = _cachedVersion;
             if (_sessionStarted)
             {
-                if (IsGuestName(_cachedUserName))
+                long now = _clock.ElapsedMilliseconds;
+                if (IsGuestName(_cachedUserName) &&
+                    now - _lastUserNameRead >= UserNameRetryIntervalMs)
                 {
+                    _lastUserNameRead = now;
                     string userName = ReadUserName();
                     if (!IsGuestName(userName))
                     {
@@ -928,8 +1005,7 @@ namespace MaiDGBridge
             if (_entryProcess != null)
             {
                 presence.Status = "LOGIN";
-                presence.Remaining = ReadProcessRemaining(_entryProcess);
-                presence.TimerInfinite = ReadProcessTimerInfinite(_entryProcess);
+                ReadProcessTimer(_entryProcess, out presence.Remaining, out presence.TimerInfinite);
                 return presence;
             }
             if (_advertiseProcess != null)
@@ -941,36 +1017,31 @@ namespace MaiDGBridge
             if (_modeSelectProcess != null)
             {
                 presence.Status = "MODE_SELECT";
-                presence.Remaining = ReadProcessRemaining(_modeSelectProcess);
-                presence.TimerInfinite = ReadProcessTimerInfinite(_modeSelectProcess);
+                ReadProcessTimer(_modeSelectProcess, out presence.Remaining, out presence.TimerInfinite);
                 return presence;
             }
             if (_mapSelectProcess != null)
             {
                 presence.Status = "MAP_SELECT";
-                presence.Remaining = ReadProcessRemaining(_mapSelectProcess);
-                presence.TimerInfinite = ReadProcessTimerInfinite(_mapSelectProcess);
+                ReadProcessTimer(_mapSelectProcess, out presence.Remaining, out presence.TimerInfinite);
                 return presence;
             }
             if (_ticketSelectProcess != null)
             {
                 presence.Status = "TICKET_SELECT";
-                presence.Remaining = ReadProcessRemaining(_ticketSelectProcess);
-                presence.TimerInfinite = ReadProcessTimerInfinite(_ticketSelectProcess);
+                ReadProcessTimer(_ticketSelectProcess, out presence.Remaining, out presence.TimerInfinite);
                 return presence;
             }
             if (_characterSelectProcess != null)
             {
                 presence.Status = "CHARACTER_SELECT";
-                presence.Remaining = ReadProcessRemaining(_characterSelectProcess);
-                presence.TimerInfinite = ReadProcessTimerInfinite(_characterSelectProcess);
+                ReadProcessTimer(_characterSelectProcess, out presence.Remaining, out presence.TimerInfinite);
                 return presence;
             }
             if (_transitionProcess != null)
             {
                 presence.Status = string.IsNullOrEmpty(_transitionStatus) ? "LOADING" : _transitionStatus;
-                presence.Remaining = ReadProcessRemaining(_transitionProcess);
-                presence.TimerInfinite = ReadProcessTimerInfinite(_transitionProcess);
+                ReadProcessTimer(_transitionProcess, out presence.Remaining, out presence.TimerInfinite);
                 return presence;
             }
             if (_resultProcess != null)
@@ -1009,15 +1080,8 @@ namespace MaiDGBridge
             {
                 musicSelectData = selected ?? currentSelection;
             }
-            presence.DifficultyId = ReadSelectedDifficulty(process, musicSelectData);
-            presence.GameDifficultyId = ReadDifficultyValue(InvokeMethod(process, "GetDifficulty", 0, 0));
-            presence.CurrentDifficultyId = ReadDifficultyValue(InvokeMethod(process, "GetCurrentDifficulty", 0));
-            presence.SelectDifficultyIndex = ReadDifficultyValue(
-                InvokeMethod(process, "GetDifficultySelectIndex", 0));
-            presence.CardDifficultyId = ReadDifficultyValue(ReadFirstMember(
-                musicSelectData, "Difficulty", "difficulty", "DifficultyId", "difficultyId"));
-            presence.IsLevelTab = ToBool(InvokeMethod(process, "IsLevelTab", 0));
-            presence.IsExtraFolder = ToBool(InvokeMethod(process, "IsExtraFolder", 0));
+            presence.DifficultyId = PopulateSelectedDifficulty(process, musicSelectData, presence);
+            int requestedDifficulty = presence.DifficultyId;
             presence.Difficulty = DifficultyName(presence.DifficultyId);
             object music = ReadMember(musicSelectData, "MusicData");
             if (music == null)
@@ -1029,6 +1093,14 @@ namespace MaiDGBridge
             {
                 presence.MusicId = ToInt(ReadMember(ReadMember(music, "name"), "id"));
             }
+
+            if (TryApplySelectedPresenceMetadata(presence, requestedDifficulty))
+            {
+                ReadProcessTimer(process, out presence.Remaining, out presence.TimerInfinite);
+                CacheSelectedMetadata(presence);
+                return presence;
+            }
+
             presence.Title = ReadStringId(music, "name");
             presence.Composer = ReadStringId(music, "artistName");
             presence.Artist = presence.Composer;
@@ -1071,14 +1143,53 @@ namespace MaiDGBridge
                 }
             }
 
-            object timer = ReadMember(
-                ReadMember(ReadMember(ReadMember(process, "container"), "processManager"), "_genericManager"),
-                "_timerController");
-            object timerEntry = ReadIndex(timer, 0);
-            presence.Remaining = ToInt(ReadMember(timerEntry, "CountDownSecond"));
-            presence.TimerInfinite = ToBool(ReadMember(timerEntry, "IsInfinity"));
+            ReadProcessTimer(process, out presence.Remaining, out presence.TimerInfinite);
+            StoreSelectedPresenceMetadata(presence, requestedDifficulty);
             CacheSelectedMetadata(presence);
             return presence;
+        }
+
+        private bool TryApplySelectedPresenceMetadata(PresenceSnapshot presence, int requestedDifficulty)
+        {
+            PresenceSnapshot cached = _selectedPresenceMetadata;
+            if (cached == null || presence.MusicId <= 0 || cached.MusicId != presence.MusicId ||
+                _selectedPresenceRequestedDifficulty != requestedDifficulty)
+            {
+                return false;
+            }
+
+            presence.MusicId = cached.MusicId;
+            presence.DifficultyId = cached.DifficultyId;
+            presence.Difficulty = cached.Difficulty;
+            presence.Title = cached.Title;
+            presence.Artist = cached.Artist;
+            presence.Author = cached.Author;
+            presence.Composer = cached.Composer;
+            presence.Level = cached.Level;
+            presence.Constant = cached.Constant;
+            return true;
+        }
+
+        private void StoreSelectedPresenceMetadata(PresenceSnapshot presence, int requestedDifficulty)
+        {
+            if (presence == null || presence.MusicId <= 0)
+            {
+                return;
+            }
+
+            _selectedPresenceMetadata = new PresenceSnapshot
+            {
+                MusicId = presence.MusicId,
+                DifficultyId = presence.DifficultyId,
+                Difficulty = presence.Difficulty,
+                Title = presence.Title,
+                Artist = presence.Artist,
+                Author = presence.Author,
+                Composer = presence.Composer,
+                Level = presence.Level,
+                Constant = presence.Constant
+            };
+            _selectedPresenceRequestedDifficulty = requestedDifficulty;
         }
 
         private void CacheSelectedMetadata(PresenceSnapshot presence)
@@ -1088,61 +1199,64 @@ namespace MaiDGBridge
                 return;
             }
 
-            _selectedMetadata = new Snapshot
-            {
-                MusicId = presence.MusicId,
-                Difficulty = presence.DifficultyId,
-                Title = presence.Title,
-                Artist = presence.Artist,
-                Author = presence.Author,
-                Composer = presence.Composer,
-                Chart = presence.Difficulty,
-                Level = presence.Level,
-                Constant = presence.Constant
-            };
+            Snapshot metadata = _selectedMetadata ?? new Snapshot();
+            metadata.MusicId = presence.MusicId;
+            metadata.Difficulty = presence.DifficultyId;
+            metadata.Title = presence.Title;
+            metadata.Artist = presence.Artist;
+            metadata.Author = presence.Author;
+            metadata.Composer = presence.Composer;
+            metadata.Chart = presence.Difficulty;
+            metadata.Level = presence.Level;
+            metadata.Constant = presence.Constant;
+            _selectedMetadata = metadata;
         }
 
         private static int ReadSelectedDifficulty(object process, object selected)
         {
+            return PopulateSelectedDifficulty(process, selected, new PresenceSnapshot());
+        }
+
+        private static int PopulateSelectedDifficulty(
+            object process, object selected, PresenceSnapshot presence)
+        {
             object gameDifficulty = InvokeMethod(process, "GetDifficulty", 0, 0);
             int gameDifficultyValue = ReadDifficultyValue(gameDifficulty);
+            presence.GameDifficultyId = gameDifficultyValue;
+            presence.CurrentDifficultyId = ReadDifficultyValue(
+                InvokeMethod(process, "GetCurrentDifficulty", 0));
+            presence.SelectDifficultyIndex = ReadDifficultyValue(
+                InvokeMethod(process, "GetDifficultySelectIndex", 0));
+            presence.CardDifficultyId = ReadDifficultyValue(ReadFirstMember(
+                selected, "Difficulty", "difficulty", "DifficultyId", "difficultyId", "SelectDifficultyID"));
+            presence.IsLevelTab = ToBool(InvokeMethod(process, "IsLevelTab", 0));
+            presence.IsExtraFolder = ToBool(InvokeMethod(process, "IsExtraFolder", 0));
             if (gameDifficultyValue >= 0)
             {
                 return gameDifficultyValue;
             }
 
-            bool levelTab = ToBool(InvokeMethod(process, "IsLevelTab", 0));
-            bool extraFolder = ToBool(InvokeMethod(process, "IsExtraFolder", 0));
-            if (!levelTab && !extraFolder)
+            if (!presence.IsLevelTab && !presence.IsExtraFolder)
             {
-                object currentMethod = InvokeMethod(process, "GetCurrentDifficulty", 0);
-                int currentMethodValue = ToInt(currentMethod);
-                if (currentMethod != null && currentMethodValue >= 0 && currentMethodValue < 6)
+                if (presence.CurrentDifficultyId >= 0)
                 {
-                    return currentMethodValue;
+                    return presence.CurrentDifficultyId;
                 }
             }
 
-            object selectedIndex = InvokeMethod(process, "GetDifficultySelectIndex", 0);
-            int selectedIndexValue = ToInt(selectedIndex);
-            if (selectedIndex != null && selectedIndexValue >= 0 && selectedIndexValue < 6)
+            if (presence.SelectDifficultyIndex >= 0)
             {
-                return selectedIndexValue;
+                return presence.SelectDifficultyIndex;
             }
 
-            object selectedValue = ReadFirstMember(
-                selected, "Difficulty", "difficulty", "DifficultyId", "difficultyId", "SelectDifficultyID");
-            int selectedDifficulty = ToInt(selectedValue);
-            if (selectedValue != null && selectedDifficulty >= 0 && selectedDifficulty < 6)
+            if (presence.CardDifficultyId >= 0)
             {
-                return selectedDifficulty;
+                return presence.CardDifficultyId;
             }
 
-            object currentMethodFallback = InvokeMethod(process, "GetCurrentDifficulty", 0);
-            int currentMethodFallbackValue = ToInt(currentMethodFallback);
-            if (currentMethodFallback != null && currentMethodFallbackValue >= 0 && currentMethodFallbackValue < 6)
+            if (presence.CurrentDifficultyId >= 0)
             {
-                return currentMethodFallbackValue;
+                return presence.CurrentDifficultyId;
             }
 
             object current = ReadFirstMember(
@@ -1164,64 +1278,58 @@ namespace MaiDGBridge
             return value != null && difficulty >= 0 && difficulty < 6 ? difficulty : -1;
         }
 
-        private static int ReadProcessRemaining(object process)
+        private static void ReadProcessTimer(object process, out int remaining, out bool infinite)
         {
+            remaining = 0;
+            infinite = false;
             object genericTimer = ReadGenericTimer(process);
             object genericRemaining = ReadFirstMember(
                 genericTimer, "CountDownSecond", "Remaining", "CountDown", "Seconds");
-            if (genericRemaining != null)
-            {
-                return ToInt(genericRemaining);
-            }
-            object current = process;
-            for (int depth = 0; current != null && depth < 5; depth++)
-            {
-                object direct = ReadFirstMember(current, "CountDownSecond", "Remaining", "CountDown", "Seconds");
-                if (direct != null)
-                {
-                    return ToInt(direct);
-                }
-                object timer = ReadFirstMember(current, "_timer", "Timer", "_monitor_timer", "MonitorTimer");
-                if (timer == null)
-                {
-                    timer = ReadIndex(ReadFirstMember(current, "Monitors", "_monitors"), 0);
-                }
-                if (timer == null)
-                {
-                    object context = ReadFirstMember(current, "Context", "_context");
-                    if (context != null)
-                    {
-                        object state = InvokeNoArg(context, "GetCurrentState");
-                        if (state != null && !ReferenceEquals(state, current))
-                        {
-                            current = state;
-                            continue;
-                        }
-                    }
-                    break;
-                }
-                current = ReadIndex(timer, 0) ?? timer;
-            }
-            return 0;
-        }
-
-        private static bool ReadProcessTimerInfinite(object process)
-        {
-            object genericTimer = ReadGenericTimer(process);
             object genericInfinite = ReadFirstMember(
                 genericTimer, "IsInfinity", "IsInfinite", "TimerInfinite");
-            if (genericInfinite != null)
+            bool hasRemaining = genericRemaining != null;
+            bool hasInfinite = genericInfinite != null;
+            if (hasRemaining)
             {
-                return ToBool(genericInfinite);
+                remaining = ToInt(genericRemaining);
             }
+            if (hasInfinite)
+            {
+                infinite = ToBool(genericInfinite);
+            }
+            if (hasRemaining && hasInfinite)
+            {
+                return;
+            }
+
             object current = process;
             for (int depth = 0; current != null && depth < 5; depth++)
             {
-                object value = ReadFirstMember(current, "IsInfinity", "IsInfinite", "TimerInfinite");
-                if (value != null)
+                if (!hasRemaining)
                 {
-                    return ToBool(value);
+                    object direct = ReadFirstMember(
+                        current, "CountDownSecond", "Remaining", "CountDown", "Seconds");
+                    if (direct != null)
+                    {
+                        remaining = ToInt(direct);
+                        hasRemaining = true;
+                    }
                 }
+                if (!hasInfinite)
+                {
+                    object value = ReadFirstMember(
+                        current, "IsInfinity", "IsInfinite", "TimerInfinite");
+                    if (value != null)
+                    {
+                        infinite = ToBool(value);
+                        hasInfinite = true;
+                    }
+                }
+                if (hasRemaining && hasInfinite)
+                {
+                    return;
+                }
+
                 object timer = ReadFirstMember(current, "_timer", "Timer", "_monitor_timer", "MonitorTimer");
                 if (timer == null)
                 {
@@ -1240,7 +1348,22 @@ namespace MaiDGBridge
                 }
                 current = ReadIndex(timer, 0) ?? timer;
             }
-            return false;
+        }
+
+        private static int ReadProcessRemaining(object process)
+        {
+            int remaining;
+            bool infinite;
+            ReadProcessTimer(process, out remaining, out infinite);
+            return remaining;
+        }
+
+        private static bool ReadProcessTimerInfinite(object process)
+        {
+            int remaining;
+            bool infinite;
+            ReadProcessTimer(process, out remaining, out infinite);
+            return infinite;
         }
 
         private static object ReadGenericTimer(object process)
@@ -1276,6 +1399,36 @@ namespace MaiDGBridge
                 }
             }
             return null;
+        }
+
+        private static object ReadFirstMember(object target, string name0, string name1)
+        {
+            object value = ReadMember(target, name0);
+            return value ?? ReadMember(target, name1);
+        }
+
+        private static object ReadFirstMember(
+            object target, string name0, string name1, string name2)
+        {
+            object value = ReadMember(target, name0) ?? ReadMember(target, name1);
+            return value ?? ReadMember(target, name2);
+        }
+
+        private static object ReadFirstMember(
+            object target, string name0, string name1, string name2, string name3)
+        {
+            object value = ReadMember(target, name0) ?? ReadMember(target, name1);
+            value = value ?? ReadMember(target, name2);
+            return value ?? ReadMember(target, name3);
+        }
+
+        private static object ReadFirstMember(
+            object target, string name0, string name1, string name2, string name3, string name4)
+        {
+            object value = ReadMember(target, name0) ?? ReadMember(target, name1);
+            value = value ?? ReadMember(target, name2);
+            value = value ?? ReadMember(target, name3);
+            return value ?? ReadMember(target, name4);
         }
 
         private static object InvokeMethod(object target, string name, params object[] arguments)
@@ -1321,8 +1474,24 @@ namespace MaiDGBridge
             {
                 return array.GetValue(index);
             }
-            PropertyInfo item = target.GetType().GetProperty("Item", new System.Type[] { typeof(int) });
-            return item == null ? null : item.GetValue(target, new object[] { index });
+            PropertyInfo item;
+            System.Type type = target.GetType();
+            lock (MemberCacheLock)
+            {
+                if (!IntegerIndexerCache.TryGetValue(type, out item))
+                {
+                    item = type.GetProperty("Item", new System.Type[] { typeof(int) });
+                    IntegerIndexerCache[type] = item;
+                }
+            }
+            try
+            {
+                return item == null ? null : item.GetValue(target, new object[] { index });
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private static bool ToBool(object value)
@@ -1417,6 +1586,7 @@ namespace MaiDGBridge
             {
                 active._cachedUserName = userName;
             }
+            active._lastUserNameRead = active._clock.ElapsedMilliseconds;
             active._presenceRefreshRequested = true;
         }
 
@@ -2047,20 +2217,81 @@ namespace MaiDGBridge
         }
 
         private static MethodInfo FindMethod(
-            System.Type type, string name, bool isStatic, params System.Type[] arguments)
+            System.Type type, string name, bool isStatic)
         {
-            BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic |
-                                 (isStatic ? BindingFlags.Static : BindingFlags.Instance);
-            while (type != null)
+            return FindMethod(type, name, isStatic, 0, null, null);
+        }
+
+        private static MethodInfo FindMethod(
+            System.Type type, string name, bool isStatic, System.Type argument0)
+        {
+            return FindMethod(type, name, isStatic, 1, argument0, null);
+        }
+
+        private static MethodInfo FindMethod(
+            System.Type type,
+            string name,
+            bool isStatic,
+            System.Type argument0,
+            System.Type argument1)
+        {
+            return FindMethod(type, name, isStatic, 2, argument0, argument1);
+        }
+
+        private static MethodInfo FindMethod(
+            System.Type type,
+            string name,
+            bool isStatic,
+            int argumentCount,
+            System.Type argument0,
+            System.Type argument1)
+        {
+            if (type == null || string.IsNullOrEmpty(name))
             {
-                MethodInfo method = type.GetMethod(name, flags, null, arguments, null);
-                if (method != null)
-                {
-                    return method;
-                }
-                type = type.BaseType;
+                return null;
             }
-            return null;
+
+            MethodCacheKey cacheKey = new MethodCacheKey(
+                type, name, isStatic, argumentCount, argument0, argument1);
+            lock (MemberCacheLock)
+            {
+                MethodInfo cached;
+                if (MethodCache.TryGetValue(cacheKey, out cached))
+                {
+                    return cached;
+                }
+
+                BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic |
+                                     (isStatic ? BindingFlags.Static : BindingFlags.Instance);
+                System.Type[] arguments;
+                if (argumentCount == 0)
+                {
+                    arguments = System.Type.EmptyTypes;
+                }
+                else if (argumentCount == 1)
+                {
+                    arguments = new System.Type[] { argument0 };
+                }
+                else
+                {
+                    arguments = new System.Type[] { argument0, argument1 };
+                }
+
+                System.Type current = type;
+                while (current != null)
+                {
+                    MethodInfo method = current.GetMethod(name, flags, null, arguments, null);
+                    if (method != null)
+                    {
+                        MethodCache[cacheKey] = method;
+                        return method;
+                    }
+                    current = current.BaseType;
+                }
+
+                MethodCache[cacheKey] = null;
+                return null;
+            }
         }
 
         private static object ReadMember(object target, string name)

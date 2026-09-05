@@ -11,8 +11,8 @@ from i18n import DEFAULT_LANGUAGE, LANGUAGE_CODES, normalize_language, tr
 
 
 APP_NAME = "MaimaiVrchatOsc"
-APP_VERSION = "2.1.13"
-BRIDGE_VERSION = "1.4.17"
+APP_VERSION = "2.1.14"
+BRIDGE_VERSION = "1.4.18"
 
 DEFAULT_CONFIG = {
     "game_package": "",
